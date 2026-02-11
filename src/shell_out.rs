@@ -1,9 +1,9 @@
-use crate::ansi::strip_non_style_ansi;
 use crate::model::GlobalArgs;
 use crate::terminal::{self, Term};
 use anyhow::{Result, anyhow};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
+use regex::Regex;
 use std::{
     env,
     io::{Read, Write},
@@ -1003,4 +1003,10 @@ pub fn get_input_from_editor(
     } else {
         Ok(Some(contents))
     }
+}
+
+fn strip_non_style_ansi(str: &str) -> String {
+    let non_style_ansi_regex =
+        Regex::new(r"\x1b(\[[0-9;?]*[ -/]*([@-l]|[n-~])|\].*?(\x07|\x1b\\)|P.*?\x1b\\)").unwrap();
+    non_style_ansi_regex.replace_all(str, "").to_string()
 }

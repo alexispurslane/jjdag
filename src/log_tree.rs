@@ -1,5 +1,5 @@
 use crate::model::GlobalArgs;
-use crate::{ansi::strip_ansi, shell_out::JjCommand};
+use crate::shell_out::JjCommand;
 use ansi_to_tui::IntoText;
 use anyhow::{Error, Result, anyhow, bail};
 use ratatui::{
@@ -929,4 +929,9 @@ impl LogTreeNode for DiffHunkLine {
 fn fold_symbol(unfolded: bool) -> Span<'static> {
     let symbol = if unfolded { "▾" } else { "▸" };
     Span::styled(symbol, Style::default().fg(Color::DarkGray))
+}
+
+fn strip_ansi(pretty_str: &str) -> String {
+    let ansi_regex = Regex::new(r"\x1b\[[0-9;]*m").unwrap();
+    ansi_regex.replace_all(pretty_str, "").to_string()
 }
