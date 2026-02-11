@@ -4,6 +4,7 @@
 !.gitignore
 !Cargo.lock
 !Cargo.toml
+!Justfile
 !README.md
 !flake.lock
 !flake.nix
