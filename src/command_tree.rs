@@ -1,4 +1,10 @@
-use crate::update::{Message, RebaseDestination, RebaseDestinationType, RebaseSourceType};
+use crate::update::{
+    AbandonMode, AbsorbMode, BookmarkMoveMode, DuplicateDestination, DuplicateDestinationType,
+    GitFetchMode, GitPushMode, InterdiffMode, Message, MetaeditAction, NewMode, NextPrevDirection,
+    NextPrevMode, ParallelizeSource, RebaseDestination, RebaseDestinationType, RebaseSourceType,
+    RestoreMode, RevertDestination, RevertDestinationType, RevertRevision, SignAction,
+    SimplifyParentsMode, SquashMode, ViewMode,
+};
 use crossterm::event::KeyCode;
 use indexmap::IndexMap;
 use ratatui::{
@@ -16,7 +22,7 @@ pub struct CommandTreeNodeChildren {
 }
 
 impl CommandTreeNodeChildren {
-    pub fn new() -> Self {
+    fn new() -> Self {
         Self {
             nodes: HashMap::new(),
             help: IndexMap::new(),
@@ -27,11 +33,11 @@ impl CommandTreeNodeChildren {
         self.nodes.get(key_code)
     }
 
-    pub fn get_node_mut(&mut self, key_code: &KeyCode) -> Option<&mut CommandTreeNode> {
+    fn get_node_mut(&mut self, key_code: &KeyCode) -> Option<&mut CommandTreeNode> {
         self.nodes.get_mut(key_code)
     }
 
-    pub fn get_help_entries(&self) -> HelpEntries {
+    fn get_help_entries(&self) -> HelpEntries {
         let mut help = self.help.clone();
 
         for (_, entries) in help.iter_mut() {
@@ -46,7 +52,7 @@ impl CommandTreeNodeChildren {
         render_help_text(entries)
     }
 
-    pub fn add_child(
+    fn add_child(
         &mut self,
         help_group_text: &str,
         help_text: &str,
@@ -174,19 +180,25 @@ impl CommandTree {
                 "Abandon",
                 "Selection",
                 vec![KeyCode::Char('a'), KeyCode::Char('a')],
-                CommandTreeNode::new_action(Message::Abandon),
+                CommandTreeNode::new_action(Message::Abandon {
+                    mode: AbandonMode::Default,
+                }),
             ),
             (
                 "Abandon",
                 "Selection (retain bookmarks)",
                 vec![KeyCode::Char('a'), KeyCode::Char('b')],
-                CommandTreeNode::new_action(Message::AbandonRetainBookmarks),
+                CommandTreeNode::new_action(Message::Abandon {
+                    mode: AbandonMode::RetainBookmarks,
+                }),
             ),
             (
                 "Abandon",
                 "Selection (restore descendants)",
                 vec![KeyCode::Char('a'), KeyCode::Char('d')],
-                CommandTreeNode::new_action(Message::AbandonRestoreDescendants),
+                CommandTreeNode::new_action(Message::Abandon {
+                    mode: AbandonMode::RestoreDescendants,
+                }),
             ),
             (
                 "Commands",
@@ -198,7 +210,9 @@ impl CommandTree {
                 "Absorb",
                 "From selection",
                 vec![KeyCode::Char('A'), KeyCode::Char('a')],
-                CommandTreeNode::new_action(Message::Absorb),
+                CommandTreeNode::new_action(Message::Absorb {
+                    mode: AbsorbMode::Default,
+                }),
             ),
             (
                 "Absorb",
@@ -210,7 +224,9 @@ impl CommandTree {
                 "Absorb into",
                 "Select destination",
                 vec![KeyCode::Char('A'), KeyCode::Char('i'), KeyCode::Enter],
-                CommandTreeNode::new_action(Message::AbsorbInto),
+                CommandTreeNode::new_action(Message::Absorb {
+                    mode: AbsorbMode::Into,
+                }),
             ),
             (
                 "Commands",
@@ -245,7 +261,9 @@ impl CommandTree {
                     KeyCode::Char('m'),
                     KeyCode::Enter,
                 ],
-                CommandTreeNode::new_action(Message::BookmarkMove),
+                CommandTreeNode::new_action(Message::BookmarkMove {
+                    mode: BookmarkMoveMode::Default,
+                }),
             ),
             (
                 "Bookmark move",
@@ -262,13 +280,17 @@ impl CommandTree {
                     KeyCode::Char('M'),
                     KeyCode::Enter,
                 ],
-                CommandTreeNode::new_action(Message::BookmarkMoveAllowBackwards),
+                CommandTreeNode::new_action(Message::BookmarkMove {
+                    mode: BookmarkMoveMode::AllowBackwards,
+                }),
             ),
             (
                 "Bookmark move",
                 "Tug to selection",
                 vec![KeyCode::Char('b'), KeyCode::Char('m'), KeyCode::Char('t')],
-                CommandTreeNode::new_action(Message::BookmarkMoveTug),
+                CommandTreeNode::new_action(Message::BookmarkMove {
+                    mode: BookmarkMoveMode::Tug,
+                }),
             ),
             (
                 "Bookmark",
@@ -298,13 +320,17 @@ impl CommandTree {
                 "Bookmark",
                 "Forget",
                 vec![KeyCode::Char('b'), KeyCode::Char('f')],
-                CommandTreeNode::new_action(Message::BookmarkForget),
+                CommandTreeNode::new_action(Message::BookmarkForget {
+                    include_remotes: false,
+                }),
             ),
             (
                 "Bookmark",
                 "Forget, including remotes",
                 vec![KeyCode::Char('b'), KeyCode::Char('F')],
-                CommandTreeNode::new_action(Message::BookmarkForgetIncludeRemotes),
+                CommandTreeNode::new_action(Message::BookmarkForget {
+                    include_remotes: true,
+                }),
             ),
             (
                 "Bookmark",
@@ -346,7 +372,10 @@ impl CommandTree {
                 "Duplicate",
                 "Selection",
                 vec![KeyCode::Char('D'), KeyCode::Char('d')],
-                CommandTreeNode::new_action(Message::Duplicate),
+                CommandTreeNode::new_action(Message::Duplicate {
+                    destination_type: DuplicateDestinationType::Default,
+                    destination: DuplicateDestination::Default,
+                }),
             ),
             (
                 "Duplicate",
@@ -358,7 +387,10 @@ impl CommandTree {
                 "Duplicate onto",
                 "Select destination",
                 vec![KeyCode::Char('D'), KeyCode::Char('o'), KeyCode::Enter],
-                CommandTreeNode::new_action(Message::DuplicateOnto),
+                CommandTreeNode::new_action(Message::Duplicate {
+                    destination_type: DuplicateDestinationType::Onto,
+                    destination: DuplicateDestination::Selection,
+                }),
             ),
             (
                 "Duplicate",
@@ -370,7 +402,10 @@ impl CommandTree {
                 "Duplicate insert after",
                 "Select destination",
                 vec![KeyCode::Char('D'), KeyCode::Char('a'), KeyCode::Enter],
-                CommandTreeNode::new_action(Message::DuplicateInsertAfter),
+                CommandTreeNode::new_action(Message::Duplicate {
+                    destination_type: DuplicateDestinationType::InsertAfter,
+                    destination: DuplicateDestination::Selection,
+                }),
             ),
             (
                 "Duplicate",
@@ -382,7 +417,10 @@ impl CommandTree {
                 "Duplicate insert before",
                 "Select destination",
                 vec![KeyCode::Char('D'), KeyCode::Char('b'), KeyCode::Enter],
-                CommandTreeNode::new_action(Message::DuplicateInsertBefore),
+                CommandTreeNode::new_action(Message::Duplicate {
+                    destination_type: DuplicateDestinationType::InsertBefore,
+                    destination: DuplicateDestination::Selection,
+                }),
             ),
             (
                 "Commands",
@@ -406,13 +444,13 @@ impl CommandTree {
                 "Evolog",
                 "Selection",
                 vec![KeyCode::Char('E'), KeyCode::Char('e')],
-                CommandTreeNode::new_action(Message::Evolog),
+                CommandTreeNode::new_action(Message::Evolog { patch: false }),
             ),
             (
                 "Evolog",
                 "Selection (patch)",
                 vec![KeyCode::Char('E'), KeyCode::Char('E')],
-                CommandTreeNode::new_action(Message::EvologPatch),
+                CommandTreeNode::new_action(Message::Evolog { patch: true }),
             ),
             (
                 "Commands",
@@ -448,31 +486,41 @@ impl CommandTree {
                 "Git fetch",
                 "Default",
                 vec![KeyCode::Char('g'), KeyCode::Char('f'), KeyCode::Char('f')],
-                CommandTreeNode::new_action(Message::GitFetch),
+                CommandTreeNode::new_action(Message::GitFetch {
+                    mode: GitFetchMode::Default,
+                }),
             ),
             (
                 "Git fetch",
                 "All remotes",
                 vec![KeyCode::Char('g'), KeyCode::Char('f'), KeyCode::Char('a')],
-                CommandTreeNode::new_action(Message::GitFetchAllRemotes),
+                CommandTreeNode::new_action(Message::GitFetch {
+                    mode: GitFetchMode::AllRemotes,
+                }),
             ),
             (
                 "Git fetch",
                 "Tracked bookmarks",
                 vec![KeyCode::Char('g'), KeyCode::Char('f'), KeyCode::Char('t')],
-                CommandTreeNode::new_action(Message::GitFetchTracked),
+                CommandTreeNode::new_action(Message::GitFetch {
+                    mode: GitFetchMode::Tracked,
+                }),
             ),
             (
                 "Git fetch",
                 "Branch by name",
                 vec![KeyCode::Char('g'), KeyCode::Char('f'), KeyCode::Char('b')],
-                CommandTreeNode::new_action(Message::GitFetchBranch),
+                CommandTreeNode::new_action(Message::GitFetch {
+                    mode: GitFetchMode::Branch,
+                }),
             ),
             (
                 "Git fetch",
                 "Remote by name",
                 vec![KeyCode::Char('g'), KeyCode::Char('f'), KeyCode::Char('r')],
-                CommandTreeNode::new_action(Message::GitFetchRemote),
+                CommandTreeNode::new_action(Message::GitFetch {
+                    mode: GitFetchMode::Remote,
+                }),
             ),
             (
                 "Git",
@@ -484,49 +532,65 @@ impl CommandTree {
                 "Git push",
                 "Default",
                 vec![KeyCode::Char('g'), KeyCode::Char('p'), KeyCode::Char('p')],
-                CommandTreeNode::new_action(Message::GitPush),
+                CommandTreeNode::new_action(Message::GitPush {
+                    mode: GitPushMode::Default,
+                }),
             ),
             (
                 "Git push",
                 "All bookmarks",
                 vec![KeyCode::Char('g'), KeyCode::Char('p'), KeyCode::Char('a')],
-                CommandTreeNode::new_action(Message::GitPushAll),
+                CommandTreeNode::new_action(Message::GitPush {
+                    mode: GitPushMode::All,
+                }),
             ),
             (
                 "Git push",
                 "Bookmarks at selection",
                 vec![KeyCode::Char('g'), KeyCode::Char('p'), KeyCode::Char('r')],
-                CommandTreeNode::new_action(Message::GitPushRevision),
+                CommandTreeNode::new_action(Message::GitPush {
+                    mode: GitPushMode::Revision,
+                }),
             ),
             (
                 "Git push",
                 "Tracked bookmarks",
                 vec![KeyCode::Char('g'), KeyCode::Char('p'), KeyCode::Char('t')],
-                CommandTreeNode::new_action(Message::GitPushTracked),
+                CommandTreeNode::new_action(Message::GitPush {
+                    mode: GitPushMode::Tracked,
+                }),
             ),
             (
                 "Git push",
                 "Deleted bookmarks",
                 vec![KeyCode::Char('g'), KeyCode::Char('p'), KeyCode::Char('d')],
-                CommandTreeNode::new_action(Message::GitPushDeleted),
+                CommandTreeNode::new_action(Message::GitPush {
+                    mode: GitPushMode::Deleted,
+                }),
             ),
             (
                 "Git push",
                 "New bookmark for selection",
                 vec![KeyCode::Char('g'), KeyCode::Char('p'), KeyCode::Char('c')],
-                CommandTreeNode::new_action(Message::GitPushChange),
+                CommandTreeNode::new_action(Message::GitPush {
+                    mode: GitPushMode::Change,
+                }),
             ),
             (
                 "Git push",
                 "New named bookmark for selection",
                 vec![KeyCode::Char('g'), KeyCode::Char('p'), KeyCode::Char('n')],
-                CommandTreeNode::new_action(Message::GitPushNamed),
+                CommandTreeNode::new_action(Message::GitPush {
+                    mode: GitPushMode::Named,
+                }),
             ),
             (
                 "Git push",
                 "Bookmark by name",
                 vec![KeyCode::Char('g'), KeyCode::Char('p'), KeyCode::Char('b')],
-                CommandTreeNode::new_action(Message::GitPushBookmark),
+                CommandTreeNode::new_action(Message::GitPush {
+                    mode: GitPushMode::Bookmark,
+                }),
             ),
             (
                 "Commands",
@@ -538,13 +602,17 @@ impl CommandTree {
                 "Interdiff",
                 "From @ to selection",
                 vec![KeyCode::Char('i'), KeyCode::Char('t')],
-                CommandTreeNode::new_action(Message::InterdiffToSelection),
+                CommandTreeNode::new_action(Message::Interdiff {
+                    mode: InterdiffMode::ToSelection,
+                }),
             ),
             (
                 "Interdiff",
                 "From selection to @",
                 vec![KeyCode::Char('i'), KeyCode::Char('f')],
-                CommandTreeNode::new_action(Message::InterdiffFromSelection),
+                CommandTreeNode::new_action(Message::Interdiff {
+                    mode: InterdiffMode::FromSelection,
+                }),
             ),
             (
                 "Interdiff",
@@ -556,7 +624,9 @@ impl CommandTree {
                 "Interdiff to destination",
                 "Select destination",
                 vec![KeyCode::Char('i'), KeyCode::Char('i'), KeyCode::Enter],
-                CommandTreeNode::new_action(Message::InterdiffFromSelectionToDestination),
+                CommandTreeNode::new_action(Message::Interdiff {
+                    mode: InterdiffMode::FromSelectionToDestination,
+                }),
             ),
             (
                 "Commands",
@@ -568,37 +638,49 @@ impl CommandTree {
                 "Metaedit",
                 "Update change-id",
                 vec![KeyCode::Char('m'), KeyCode::Char('c')],
-                CommandTreeNode::new_action(Message::MetaeditUpdateChangeId),
+                CommandTreeNode::new_action(Message::Metaedit {
+                    action: MetaeditAction::UpdateChangeId,
+                }),
             ),
             (
                 "Metaedit",
                 "Update author timestamp to now",
                 vec![KeyCode::Char('m'), KeyCode::Char('t')],
-                CommandTreeNode::new_action(Message::MetaeditUpdateAuthorTimestamp),
+                CommandTreeNode::new_action(Message::Metaedit {
+                    action: MetaeditAction::UpdateAuthorTimestamp,
+                }),
             ),
             (
                 "Metaedit",
                 "Update author to configured user",
                 vec![KeyCode::Char('m'), KeyCode::Char('a')],
-                CommandTreeNode::new_action(Message::MetaeditUpdateAuthor),
+                CommandTreeNode::new_action(Message::Metaedit {
+                    action: MetaeditAction::UpdateAuthor,
+                }),
             ),
             (
                 "Metaedit",
                 "Set author",
                 vec![KeyCode::Char('m'), KeyCode::Char('A')],
-                CommandTreeNode::new_action(Message::MetaeditSetAuthor),
+                CommandTreeNode::new_action(Message::Metaedit {
+                    action: MetaeditAction::SetAuthor,
+                }),
             ),
             (
                 "Metaedit",
                 "Set author timestamp",
                 vec![KeyCode::Char('m'), KeyCode::Char('T')],
-                CommandTreeNode::new_action(Message::MetaeditSetAuthorTimestamp),
+                CommandTreeNode::new_action(Message::Metaedit {
+                    action: MetaeditAction::SetAuthorTimestamp,
+                }),
             ),
             (
                 "Metaedit",
                 "Force rewrite",
                 vec![KeyCode::Char('m'), KeyCode::Char('r')],
-                CommandTreeNode::new_action(Message::MetaeditForceRewrite),
+                CommandTreeNode::new_action(Message::Metaedit {
+                    action: MetaeditAction::ForceRewrite,
+                }),
             ),
             (
                 "Commands",
@@ -610,25 +692,33 @@ impl CommandTree {
                 "New",
                 "After selection",
                 vec![KeyCode::Char('n'), KeyCode::Char('n')],
-                CommandTreeNode::new_action(Message::New),
+                CommandTreeNode::new_action(Message::New {
+                    mode: NewMode::Default,
+                }),
             ),
             (
                 "New",
                 "After selection (rebase children)",
                 vec![KeyCode::Char('n'), KeyCode::Char('a')],
-                CommandTreeNode::new_action(Message::NewInsertAfter),
+                CommandTreeNode::new_action(Message::New {
+                    mode: NewMode::InsertAfter,
+                }),
             ),
             (
                 "New",
                 "Before selection (rebase children)",
                 vec![KeyCode::Char('n'), KeyCode::Char('b')],
-                CommandTreeNode::new_action(Message::NewBefore),
+                CommandTreeNode::new_action(Message::New {
+                    mode: NewMode::Before,
+                }),
             ),
             (
                 "New",
                 "After trunk",
                 vec![KeyCode::Char('n'), KeyCode::Char('m')],
-                CommandTreeNode::new_action(Message::NewAfterTrunk),
+                CommandTreeNode::new_action(Message::New {
+                    mode: NewMode::AfterTrunk,
+                }),
             ),
             (
                 "New",
@@ -652,7 +742,9 @@ impl CommandTree {
                 "Parallelize",
                 "Selection with parent",
                 vec![KeyCode::Char('p'), KeyCode::Char('p')],
-                CommandTreeNode::new_action(Message::Parallelize),
+                CommandTreeNode::new_action(Message::Parallelize {
+                    source: ParallelizeSource::Selection,
+                }),
             ),
             (
                 "Parallelize",
@@ -664,55 +756,87 @@ impl CommandTree {
                 "Parallelize range",
                 "Select destination",
                 vec![KeyCode::Char('p'), KeyCode::Char('P'), KeyCode::Enter],
-                CommandTreeNode::new_action(Message::ParallelizeRange),
+                CommandTreeNode::new_action(Message::Parallelize {
+                    source: ParallelizeSource::Range,
+                }),
             ),
             (
                 "Parallelize",
                 "Revset",
                 vec![KeyCode::Char('p'), KeyCode::Char('r')],
-                CommandTreeNode::new_action(Message::ParallelizeRevset),
+                CommandTreeNode::new_action(Message::Parallelize {
+                    source: ParallelizeSource::Revset,
+                }),
             ),
             (
                 "Next",
                 "Next",
                 vec![KeyCode::Char('N'), KeyCode::Char('n')],
-                CommandTreeNode::new_action(Message::Next),
+                CommandTreeNode::new_action(Message::NextPrev {
+                    direction: NextPrevDirection::Next,
+                    mode: NextPrevMode::Default,
+                    offset: false,
+                }),
             ),
             (
                 "Next",
                 "Nth next",
                 vec![KeyCode::Char('N'), KeyCode::Char('N')],
-                CommandTreeNode::new_action(Message::NextOffset),
+                CommandTreeNode::new_action(Message::NextPrev {
+                    direction: NextPrevDirection::Next,
+                    mode: NextPrevMode::Default,
+                    offset: true,
+                }),
             ),
             (
                 "Next",
                 "Next (edit)",
                 vec![KeyCode::Char('N'), KeyCode::Char('e')],
-                CommandTreeNode::new_action(Message::NextEdit),
+                CommandTreeNode::new_action(Message::NextPrev {
+                    direction: NextPrevDirection::Next,
+                    mode: NextPrevMode::Edit,
+                    offset: false,
+                }),
             ),
             (
                 "Next",
                 "Nth next (edit)",
                 vec![KeyCode::Char('N'), KeyCode::Char('E')],
-                CommandTreeNode::new_action(Message::NextEditOffset),
+                CommandTreeNode::new_action(Message::NextPrev {
+                    direction: NextPrevDirection::Next,
+                    mode: NextPrevMode::Edit,
+                    offset: true,
+                }),
             ),
             (
                 "Next",
                 "Next (no-edit)",
                 vec![KeyCode::Char('N'), KeyCode::Char('x')],
-                CommandTreeNode::new_action(Message::NextNoEdit),
+                CommandTreeNode::new_action(Message::NextPrev {
+                    direction: NextPrevDirection::Next,
+                    mode: NextPrevMode::NoEdit,
+                    offset: false,
+                }),
             ),
             (
                 "Next",
                 "Nth next (no-edit)",
                 vec![KeyCode::Char('N'), KeyCode::Char('X')],
-                CommandTreeNode::new_action(Message::NextNoEditOffset),
+                CommandTreeNode::new_action(Message::NextPrev {
+                    direction: NextPrevDirection::Next,
+                    mode: NextPrevMode::NoEdit,
+                    offset: true,
+                }),
             ),
             (
                 "Next",
                 "Next conflict",
                 vec![KeyCode::Char('N'), KeyCode::Char('c')],
-                CommandTreeNode::new_action(Message::NextConflict),
+                CommandTreeNode::new_action(Message::NextPrev {
+                    direction: NextPrevDirection::Next,
+                    mode: NextPrevMode::Conflict,
+                    offset: false,
+                }),
             ),
             (
                 "Commands",
@@ -724,43 +848,71 @@ impl CommandTree {
                 "Previous",
                 "Previous",
                 vec![KeyCode::Char('P'), KeyCode::Char('p')],
-                CommandTreeNode::new_action(Message::Prev),
+                CommandTreeNode::new_action(Message::NextPrev {
+                    direction: NextPrevDirection::Prev,
+                    mode: NextPrevMode::Default,
+                    offset: false,
+                }),
             ),
             (
                 "Previous",
                 "Nth previous",
                 vec![KeyCode::Char('P'), KeyCode::Char('P')],
-                CommandTreeNode::new_action(Message::PrevOffset),
+                CommandTreeNode::new_action(Message::NextPrev {
+                    direction: NextPrevDirection::Prev,
+                    mode: NextPrevMode::Default,
+                    offset: true,
+                }),
             ),
             (
                 "Previous",
                 "Previous (edit)",
                 vec![KeyCode::Char('P'), KeyCode::Char('e')],
-                CommandTreeNode::new_action(Message::PrevEdit),
+                CommandTreeNode::new_action(Message::NextPrev {
+                    direction: NextPrevDirection::Prev,
+                    mode: NextPrevMode::Edit,
+                    offset: false,
+                }),
             ),
             (
                 "Previous",
                 "Nth previous (edit)",
                 vec![KeyCode::Char('P'), KeyCode::Char('E')],
-                CommandTreeNode::new_action(Message::PrevEditOffset),
+                CommandTreeNode::new_action(Message::NextPrev {
+                    direction: NextPrevDirection::Prev,
+                    mode: NextPrevMode::Edit,
+                    offset: true,
+                }),
             ),
             (
                 "Previous",
                 "Previous (no-edit)",
                 vec![KeyCode::Char('P'), KeyCode::Char('x')],
-                CommandTreeNode::new_action(Message::PrevNoEdit),
+                CommandTreeNode::new_action(Message::NextPrev {
+                    direction: NextPrevDirection::Prev,
+                    mode: NextPrevMode::NoEdit,
+                    offset: false,
+                }),
             ),
             (
                 "Previous",
                 "Nth previous (no-edit)",
                 vec![KeyCode::Char('P'), KeyCode::Char('X')],
-                CommandTreeNode::new_action(Message::PrevNoEditOffset),
+                CommandTreeNode::new_action(Message::NextPrev {
+                    direction: NextPrevDirection::Prev,
+                    mode: NextPrevMode::NoEdit,
+                    offset: true,
+                }),
             ),
             (
                 "Previous",
                 "Previous conflict",
                 vec![KeyCode::Char('P'), KeyCode::Char('c')],
-                CommandTreeNode::new_action(Message::PrevConflict),
+                CommandTreeNode::new_action(Message::NextPrev {
+                    direction: NextPrevDirection::Prev,
+                    mode: NextPrevMode::Conflict,
+                    offset: false,
+                }),
             ),
             (
                 "Commands",
@@ -772,7 +924,9 @@ impl CommandTree {
                 "Squash",
                 "Selection into parent",
                 vec![KeyCode::Char('s'), KeyCode::Char('s')],
-                CommandTreeNode::new_action(Message::Squash),
+                CommandTreeNode::new_action(Message::Squash {
+                    mode: SquashMode::Default,
+                }),
             ),
             (
                 "Squash",
@@ -784,7 +938,9 @@ impl CommandTree {
                 "Squash into",
                 "Select destination",
                 vec![KeyCode::Char('s'), KeyCode::Char('i'), KeyCode::Enter],
-                CommandTreeNode::new_action(Message::SquashInto),
+                CommandTreeNode::new_action(Message::Squash {
+                    mode: SquashMode::Into,
+                }),
             ),
             (
                 "Commands",
@@ -802,7 +958,10 @@ impl CommandTree {
                 "Sign",
                 "Selection",
                 vec![KeyCode::Char('S'), KeyCode::Char('s')],
-                CommandTreeNode::new_action(Message::Sign),
+                CommandTreeNode::new_action(Message::Sign {
+                    action: SignAction::Sign,
+                    range: false,
+                }),
             ),
             (
                 "Sign",
@@ -814,13 +973,19 @@ impl CommandTree {
                 "Sign range",
                 "Select destination",
                 vec![KeyCode::Char('S'), KeyCode::Char('S'), KeyCode::Enter],
-                CommandTreeNode::new_action(Message::SignRange),
+                CommandTreeNode::new_action(Message::Sign {
+                    action: SignAction::Sign,
+                    range: true,
+                }),
             ),
             (
                 "Sign",
                 "Unsign selection",
                 vec![KeyCode::Char('S'), KeyCode::Char('u')],
-                CommandTreeNode::new_action(Message::Unsign),
+                CommandTreeNode::new_action(Message::Sign {
+                    action: SignAction::Unsign,
+                    range: false,
+                }),
             ),
             (
                 "Sign",
@@ -832,7 +997,10 @@ impl CommandTree {
                 "Unsign range",
                 "Select destination",
                 vec![KeyCode::Char('S'), KeyCode::Char('U'), KeyCode::Enter],
-                CommandTreeNode::new_action(Message::UnsignRange),
+                CommandTreeNode::new_action(Message::Sign {
+                    action: SignAction::Unsign,
+                    range: true,
+                }),
             ),
             (
                 "Commands",
@@ -844,13 +1012,17 @@ impl CommandTree {
                 "Simplify parents of",
                 "Selection",
                 vec![KeyCode::Char('y'), KeyCode::Char('y')],
-                CommandTreeNode::new_action(Message::SimplifyParents),
+                CommandTreeNode::new_action(Message::SimplifyParents {
+                    mode: SimplifyParentsMode::Revisions,
+                }),
             ),
             (
                 "Simplify parents of",
                 "Selection with descendants",
                 vec![KeyCode::Char('y'), KeyCode::Char('Y')],
-                CommandTreeNode::new_action(Message::SimplifyParentsSource),
+                CommandTreeNode::new_action(Message::SimplifyParents {
+                    mode: SimplifyParentsMode::Source,
+                }),
             ),
             (
                 "Commands",
@@ -1345,25 +1517,33 @@ impl CommandTree {
                 "Restore",
                 "Changes in selection",
                 vec![KeyCode::Char('R'), KeyCode::Char('r')],
-                CommandTreeNode::new_action(Message::Restore),
+                CommandTreeNode::new_action(Message::Restore {
+                    mode: RestoreMode::ChangesIn,
+                }),
             ),
             (
                 "Restore",
                 "Changes in selection (restore descendants)",
                 vec![KeyCode::Char('R'), KeyCode::Char('d')],
-                CommandTreeNode::new_action(Message::RestoreRestoreDescendants),
+                CommandTreeNode::new_action(Message::Restore {
+                    mode: RestoreMode::ChangesInRestoreDescendants,
+                }),
             ),
             (
                 "Restore",
                 "From selection into @",
                 vec![KeyCode::Char('R'), KeyCode::Char('f')],
-                CommandTreeNode::new_action(Message::RestoreFrom),
+                CommandTreeNode::new_action(Message::Restore {
+                    mode: RestoreMode::From,
+                }),
             ),
             (
                 "Restore",
                 "From @ into selection",
                 vec![KeyCode::Char('R'), KeyCode::Char('i')],
-                CommandTreeNode::new_action(Message::RestoreInto),
+                CommandTreeNode::new_action(Message::Restore {
+                    mode: RestoreMode::Into,
+                }),
             ),
             (
                 "Restore",
@@ -1375,7 +1555,9 @@ impl CommandTree {
                 "Restore into",
                 "Select destination",
                 vec![KeyCode::Char('R'), KeyCode::Char('R'), KeyCode::Enter],
-                CommandTreeNode::new_action(Message::RestoreFromInto),
+                CommandTreeNode::new_action(Message::Restore {
+                    mode: RestoreMode::FromInto,
+                }),
             ),
             (
                 "Commands",
@@ -1387,19 +1569,25 @@ impl CommandTree {
                 "View",
                 "Selection",
                 vec![KeyCode::Char('v'), KeyCode::Char('v')],
-                CommandTreeNode::new_action(Message::View),
+                CommandTreeNode::new_action(Message::View {
+                    mode: ViewMode::Default,
+                }),
             ),
             (
                 "View",
                 "From selection to @",
                 vec![KeyCode::Char('v'), KeyCode::Char('f')],
-                CommandTreeNode::new_action(Message::ViewFromSelection),
+                CommandTreeNode::new_action(Message::View {
+                    mode: ViewMode::FromSelection,
+                }),
             ),
             (
                 "View",
                 "From @ to selection",
                 vec![KeyCode::Char('v'), KeyCode::Char('t')],
-                CommandTreeNode::new_action(Message::ViewToSelection),
+                CommandTreeNode::new_action(Message::View {
+                    mode: ViewMode::ToSelection,
+                }),
             ),
             (
                 "View",
@@ -1411,7 +1599,9 @@ impl CommandTree {
                 "View to destination",
                 "Select destination",
                 vec![KeyCode::Char('v'), KeyCode::Char('V'), KeyCode::Enter],
-                CommandTreeNode::new_action(Message::ViewFromSelectionToDestination),
+                CommandTreeNode::new_action(Message::View {
+                    mode: ViewMode::FromSelectionToDestination,
+                }),
             ),
             (
                 "Commands",
@@ -1423,7 +1613,11 @@ impl CommandTree {
                 "Revert",
                 "Selection onto @",
                 vec![KeyCode::Char('V'), KeyCode::Char('v')],
-                CommandTreeNode::new_action(Message::Revert),
+                CommandTreeNode::new_action(Message::Revert {
+                    revision: RevertRevision::Selection,
+                    destination_type: RevertDestinationType::Onto,
+                    destination: RevertDestination::Current,
+                }),
             ),
             (
                 "Revert",
@@ -1435,7 +1629,11 @@ impl CommandTree {
                 "Revert onto",
                 "Select destination",
                 vec![KeyCode::Char('V'), KeyCode::Char('o'), KeyCode::Enter],
-                CommandTreeNode::new_action(Message::RevertOntoDestination),
+                CommandTreeNode::new_action(Message::Revert {
+                    revision: RevertRevision::Saved,
+                    destination_type: RevertDestinationType::Onto,
+                    destination: RevertDestination::Selection,
+                }),
             ),
             (
                 "Revert",
@@ -1447,7 +1645,11 @@ impl CommandTree {
                 "Revert after",
                 "Select destination",
                 vec![KeyCode::Char('V'), KeyCode::Char('a'), KeyCode::Enter],
-                CommandTreeNode::new_action(Message::RevertInsertAfter),
+                CommandTreeNode::new_action(Message::Revert {
+                    revision: RevertRevision::Saved,
+                    destination_type: RevertDestinationType::InsertAfter,
+                    destination: RevertDestination::Selection,
+                }),
             ),
             (
                 "Revert",
@@ -1459,7 +1661,11 @@ impl CommandTree {
                 "Revert before",
                 "Select destination",
                 vec![KeyCode::Char('V'), KeyCode::Char('b'), KeyCode::Enter],
-                CommandTreeNode::new_action(Message::RevertInsertBefore),
+                CommandTreeNode::new_action(Message::Revert {
+                    revision: RevertRevision::Saved,
+                    destination_type: RevertDestinationType::InsertBefore,
+                    destination: RevertDestination::Selection,
+                }),
             ),
             (
                 "Commands",

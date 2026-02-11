@@ -135,9 +135,9 @@ pub trait LogTreeNode {
 }
 
 pub type TreePosition = Vec<usize>;
-pub const COMMIT_OR_TEXT_IDX: usize = 0;
-pub const FILE_DIFF_IDX: usize = 1;
-pub const DIFF_HUNK_IDX: usize = 2;
+const COMMIT_OR_TEXT_IDX: usize = 0;
+const FILE_DIFF_IDX: usize = 1;
+const DIFF_HUNK_IDX: usize = 2;
 pub const DIFF_HUNK_LINE_IDX: usize = 3;
 
 pub fn get_parent_tree_position(tree_pos: &TreePosition) -> Option<TreePosition> {
@@ -477,7 +477,7 @@ pub struct FileDiff {
 }
 
 impl FileDiff {
-    pub fn new(change_id: String, pretty_string: String, graph_indent: String) -> Result<Self> {
+    fn new(change_id: String, pretty_string: String, graph_indent: String) -> Result<Self> {
         let clean_string = strip_ansi(&pretty_string);
         let re = Regex::new(r"^([MADRC])\s+(.+)$").unwrap();
 

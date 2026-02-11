@@ -201,36 +201,24 @@ impl JjCommand {
         Self::_new(&args, global_args, Some(term), ReturnOutput::Stderr)
     }
 
-    pub fn duplicate(change_id: &str, global_args: GlobalArgs) -> Self {
-        let args = ["duplicate", change_id];
-        Self::_new(&args, global_args, None, ReturnOutput::Stderr)
-    }
-
-    pub fn duplicate_onto(change_id: &str, dest_change_id: &str, global_args: GlobalArgs) -> Self {
-        let args = ["duplicate", change_id, "--onto", dest_change_id];
-        Self::_new(&args, global_args, None, ReturnOutput::Stderr)
-    }
-
-    pub fn duplicate_insert_after(
+    pub fn duplicate(
         change_id: &str,
-        dest_change_id: &str,
+        destination_type: Option<&str>,
+        destination: Option<&str>,
         global_args: GlobalArgs,
     ) -> Self {
-        let args = ["duplicate", change_id, "--insert-after", dest_change_id];
+        let mut args = vec!["duplicate", change_id];
+        if let (Some(destination_type), Some(destination)) = (destination_type, destination) {
+            args.push(destination_type);
+            args.push(destination);
+        }
         Self::_new(&args, global_args, None, ReturnOutput::Stderr)
     }
 
-    pub fn duplicate_insert_before(
-        change_id: &str,
-        dest_change_id: &str,
-        global_args: GlobalArgs,
-    ) -> Self {
-        let args = ["duplicate", change_id, "--insert-before", dest_change_id];
-        Self::_new(&args, global_args, None, ReturnOutput::Stderr)
-    }
-
-    pub fn new(change_id: &str, global_args: GlobalArgs) -> Self {
-        let args = ["new", change_id];
+    pub fn new(target: &str, flags: &[&str], global_args: GlobalArgs) -> Self {
+        let mut args = vec!["new"];
+        args.extend_from_slice(flags);
+        args.push(target);
         Self::_new(&args, global_args, None, ReturnOutput::Stderr)
     }
 
@@ -239,148 +227,60 @@ impl JjCommand {
         Self::_new(&args, global_args, None, ReturnOutput::Stderr)
     }
 
-    pub fn prev(global_args: GlobalArgs) -> Self {
-        let args = ["prev"];
-        Self::_new(&args, global_args, None, ReturnOutput::Stderr)
-    }
-
-    pub fn prev_offset(offset: &str, global_args: GlobalArgs) -> Self {
-        let args = ["prev", offset];
-        Self::_new(&args, global_args, None, ReturnOutput::Stderr)
-    }
-
-    pub fn prev_edit(global_args: GlobalArgs) -> Self {
-        let args = ["prev", "--edit"];
-        Self::_new(&args, global_args, None, ReturnOutput::Stderr)
-    }
-
-    pub fn prev_edit_offset(offset: &str, global_args: GlobalArgs) -> Self {
-        let args = ["prev", "--edit", offset];
-        Self::_new(&args, global_args, None, ReturnOutput::Stderr)
-    }
-
-    pub fn prev_no_edit(global_args: GlobalArgs) -> Self {
-        let args = ["prev", "--no-edit"];
-        Self::_new(&args, global_args, None, ReturnOutput::Stderr)
-    }
-
-    pub fn prev_no_edit_offset(offset: &str, global_args: GlobalArgs) -> Self {
-        let args = ["prev", "--no-edit", offset];
-        Self::_new(&args, global_args, None, ReturnOutput::Stderr)
-    }
-
-    pub fn prev_conflict(global_args: GlobalArgs) -> Self {
-        let args = ["prev", "--conflict"];
-        Self::_new(&args, global_args, None, ReturnOutput::Stderr)
-    }
-
-    pub fn new_insert_after(change_id: &str, global_args: GlobalArgs) -> Self {
-        let args = ["new", "--insert-after", change_id];
-        Self::_new(&args, global_args, None, ReturnOutput::Stderr)
-    }
-
-    pub fn new_before(change_id: &str, global_args: GlobalArgs) -> Self {
-        let args = ["new", "--no-edit", "--insert-before", change_id];
-        Self::_new(&args, global_args, None, ReturnOutput::Stderr)
-    }
-
-    pub fn new_after_trunk(global_args: GlobalArgs) -> Self {
-        let args = ["new", "trunk()"];
-        Self::_new(&args, global_args, None, ReturnOutput::Stderr)
-    }
-
-    pub fn next(global_args: GlobalArgs) -> Self {
-        let args = ["next"];
-        Self::_new(&args, global_args, None, ReturnOutput::Stderr)
-    }
-
-    pub fn next_offset(offset: &str, global_args: GlobalArgs) -> Self {
-        let args = ["next", offset];
-        Self::_new(&args, global_args, None, ReturnOutput::Stderr)
-    }
-
-    pub fn next_edit(global_args: GlobalArgs) -> Self {
-        let args = ["next", "--edit"];
-        Self::_new(&args, global_args, None, ReturnOutput::Stderr)
-    }
-
-    pub fn next_edit_offset(offset: &str, global_args: GlobalArgs) -> Self {
-        let args = ["next", "--edit", offset];
-        Self::_new(&args, global_args, None, ReturnOutput::Stderr)
-    }
-
-    pub fn next_no_edit(global_args: GlobalArgs) -> Self {
-        let args = ["next", "--no-edit"];
-        Self::_new(&args, global_args, None, ReturnOutput::Stderr)
-    }
-
-    pub fn next_no_edit_offset(offset: &str, global_args: GlobalArgs) -> Self {
-        let args = ["next", "--no-edit", offset];
-        Self::_new(&args, global_args, None, ReturnOutput::Stderr)
-    }
-
-    pub fn next_conflict(global_args: GlobalArgs) -> Self {
-        let args = ["next", "--conflict"];
-        Self::_new(&args, global_args, None, ReturnOutput::Stderr)
-    }
-
-    pub fn abandon(change_id: &str, global_args: GlobalArgs) -> Self {
-        let args = ["abandon", change_id];
-        Self::_new(&args, global_args, None, ReturnOutput::Stderr)
-    }
-
-    pub fn abandon_retain_bookmarks(change_id: &str, global_args: GlobalArgs) -> Self {
-        let args = ["abandon", "--retain-bookmarks", change_id];
-        Self::_new(&args, global_args, None, ReturnOutput::Stderr)
-    }
-
-    pub fn abandon_restore_descendants(change_id: &str, global_args: GlobalArgs) -> Self {
-        let args = ["abandon", "--restore-descendants", change_id];
-        Self::_new(&args, global_args, None, ReturnOutput::Stderr)
-    }
-
-    pub fn absorb(change_id: &str, maybe_file_path: Option<&str>, global_args: GlobalArgs) -> Self {
-        let mut args = vec!["absorb", "--from", change_id];
-        if let Some(file_path) = maybe_file_path {
-            args.push(file_path);
+    pub fn next_prev(
+        direction: &str,
+        mode: Option<&str>,
+        offset: Option<&str>,
+        global_args: GlobalArgs,
+    ) -> Self {
+        let mut args = vec![direction];
+        if let Some(mode) = mode {
+            args.push(mode);
+        }
+        if let Some(offset) = offset {
+            args.push(offset);
         }
         Self::_new(&args, global_args, None, ReturnOutput::Stderr)
     }
 
-    pub fn absorb_into(
+    pub fn abandon(change_id: &str, mode: Option<&str>, global_args: GlobalArgs) -> Self {
+        let mut args = vec!["abandon"];
+        if let Some(mode) = mode {
+            args.push(mode);
+        }
+        args.push(change_id);
+        Self::_new(&args, global_args, None, ReturnOutput::Stderr)
+    }
+
+    pub fn absorb(
         from_change_id: &str,
-        into_change_id: &str,
+        maybe_into_change_id: Option<&str>,
         maybe_file_path: Option<&str>,
         global_args: GlobalArgs,
     ) -> Self {
-        let mut args = vec!["absorb", "--from", from_change_id, "--into", into_change_id];
+        let mut args = vec!["absorb", "--from", from_change_id];
+        if let Some(into_change_id) = maybe_into_change_id {
+            args.push("--into");
+            args.push(into_change_id);
+        }
         if let Some(file_path) = maybe_file_path {
             args.push(file_path);
         }
         Self::_new(&args, global_args, None, ReturnOutput::Stderr)
     }
 
-    pub fn revert_onto(revision: &str, destination: &str, global_args: GlobalArgs) -> Self {
-        let args = ["revert", "-r", revision, "--onto", destination];
-        Self::_new(&args, global_args, None, ReturnOutput::Stderr)
-    }
-
-    pub fn revert_insert_after(revision: &str, destination: &str, global_args: GlobalArgs) -> Self {
-        let args = ["revert", "-r", revision, "--insert-after", destination];
-        Self::_new(&args, global_args, None, ReturnOutput::Stderr)
-    }
-
-    pub fn revert_insert_before(
+    pub fn revert(
         revision: &str,
+        destination_type: &str,
         destination: &str,
         global_args: GlobalArgs,
     ) -> Self {
-        let args = ["revert", "-r", revision, "--insert-before", destination];
+        let args = ["revert", "-r", revision, destination_type, destination];
         Self::_new(&args, global_args, None, ReturnOutput::Stderr)
     }
 
-    pub fn sign(revset: &str, global_args: GlobalArgs) -> Self {
-        let args = ["sign", "-r", revset];
+    pub fn sign(action: &str, revset: &str, global_args: GlobalArgs) -> Self {
+        let args = [action, "-r", revset];
         Self::_new(&args, global_args, None, ReturnOutput::Stderr)
     }
 
@@ -394,18 +294,8 @@ impl JjCommand {
         Self::_new_skip_sync(&args, global_args, Some(term), ReturnOutput::Stderr)
     }
 
-    pub fn unsign(revset: &str, global_args: GlobalArgs) -> Self {
-        let args = ["unsign", "-r", revset];
-        Self::_new(&args, global_args, None, ReturnOutput::Stderr)
-    }
-
-    pub fn simplify_parents(revision: &str, global_args: GlobalArgs) -> Self {
-        let args = ["simplify-parents", "-r", revision];
-        Self::_new(&args, global_args, None, ReturnOutput::Stderr)
-    }
-
-    pub fn simplify_parents_source(revision: &str, global_args: GlobalArgs) -> Self {
-        let args = ["simplify-parents", "-s", revision];
+    pub fn simplify_parents(revision: &str, mode: &str, global_args: GlobalArgs) -> Self {
+        let args = ["simplify-parents", mode, revision];
         Self::_new(&args, global_args, None, ReturnOutput::Stderr)
     }
 
@@ -438,72 +328,9 @@ impl JjCommand {
         Self::_new(&args, global_args, None, ReturnOutput::Stderr)
     }
 
-    pub fn restore(
-        change_id: &str,
-        maybe_file_path: Option<&str>,
-        global_args: GlobalArgs,
-    ) -> Self {
-        let mut args = vec!["restore", "--changes-in", change_id];
-        if let Some(file_path) = maybe_file_path {
-            args.push(file_path);
-        }
-        Self::_new(&args, global_args, None, ReturnOutput::Stderr)
-    }
-
-    pub fn restore_from(
-        from_change_id: &str,
-        maybe_file_path: Option<&str>,
-        global_args: GlobalArgs,
-    ) -> Self {
-        let mut args = vec!["restore", "--from", from_change_id];
-        if let Some(file_path) = maybe_file_path {
-            args.push(file_path);
-        }
-        Self::_new(&args, global_args, None, ReturnOutput::Stderr)
-    }
-
-    pub fn restore_into(
-        into_change_id: &str,
-        maybe_file_path: Option<&str>,
-        global_args: GlobalArgs,
-    ) -> Self {
-        let mut args = vec!["restore", "--into", into_change_id];
-        if let Some(file_path) = maybe_file_path {
-            args.push(file_path);
-        }
-        Self::_new(&args, global_args, None, ReturnOutput::Stderr)
-    }
-
-    pub fn restore_restore_descendants(
-        change_id: &str,
-        maybe_file_path: Option<&str>,
-        global_args: GlobalArgs,
-    ) -> Self {
-        let mut args = vec![
-            "restore",
-            "--changes-in",
-            change_id,
-            "--restore-descendants",
-        ];
-        if let Some(file_path) = maybe_file_path {
-            args.push(file_path);
-        }
-        Self::_new(&args, global_args, None, ReturnOutput::Stderr)
-    }
-
-    pub fn restore_from_into(
-        from_change_id: &str,
-        into_change_id: &str,
-        maybe_file_path: Option<&str>,
-        global_args: GlobalArgs,
-    ) -> Self {
-        let mut args = vec![
-            "restore",
-            "--from",
-            from_change_id,
-            "--into",
-            into_change_id,
-        ];
+    pub fn restore(flags: &[&str], maybe_file_path: Option<&str>, global_args: GlobalArgs) -> Self {
+        let mut args = vec!["restore"];
+        args.extend_from_slice(flags);
         if let Some(file_path) = maybe_file_path {
             args.push(file_path);
         }
@@ -554,13 +381,11 @@ impl JjCommand {
         Self::_new(&args, global_args, None, ReturnOutput::Stderr)
     }
 
-    pub fn evolog(change_id: &str, global_args: GlobalArgs, term: Term) -> Self {
-        let args = ["evolog", "-r", change_id];
-        Self::_new_skip_sync(&args, global_args, Some(term), ReturnOutput::Stderr)
-    }
-
-    pub fn evolog_patch(change_id: &str, global_args: GlobalArgs, term: Term) -> Self {
-        let args = ["evolog", "-r", change_id, "--patch"];
+    pub fn evolog(change_id: &str, patch: bool, global_args: GlobalArgs, term: Term) -> Self {
+        let mut args = vec!["evolog", "-r", change_id];
+        if patch {
+            args.push("--patch");
+        }
         Self::_new_skip_sync(&args, global_args, Some(term), ReturnOutput::Stderr)
     }
 
@@ -588,103 +413,39 @@ impl JjCommand {
         Self::_new(&args, global_args, None, ReturnOutput::Stderr)
     }
 
-    pub fn metaedit_update_change_id(change_id: &str, global_args: GlobalArgs) -> Self {
-        let args = ["metaedit", "--update-change-id", change_id];
-        Self::_new(&args, global_args, None, ReturnOutput::Stderr)
-    }
-
-    pub fn metaedit_update_author_timestamp(change_id: &str, global_args: GlobalArgs) -> Self {
-        let args = ["metaedit", "--update-author-timestamp", change_id];
-        Self::_new(&args, global_args, None, ReturnOutput::Stderr)
-    }
-
-    pub fn metaedit_update_author(change_id: &str, global_args: GlobalArgs) -> Self {
-        let args = ["metaedit", "--update-author", change_id];
-        Self::_new(&args, global_args, None, ReturnOutput::Stderr)
-    }
-
-    pub fn metaedit_set_author(change_id: &str, author: &str, global_args: GlobalArgs) -> Self {
-        let args = ["metaedit", "--author", author, change_id];
-        Self::_new(&args, global_args, None, ReturnOutput::Stderr)
-    }
-
-    pub fn metaedit_set_author_timestamp(
+    pub fn metaedit(
         change_id: &str,
-        timestamp: &str,
+        flag: &str,
+        value: Option<&str>,
         global_args: GlobalArgs,
     ) -> Self {
-        let args = ["metaedit", "--author-timestamp", timestamp, change_id];
+        let mut args = vec!["metaedit", flag];
+        if let Some(value) = value {
+            args.push(value);
+        }
+        args.push(change_id);
         Self::_new(&args, global_args, None, ReturnOutput::Stderr)
     }
 
-    pub fn metaedit_force_rewrite(change_id: &str, global_args: GlobalArgs) -> Self {
-        let args = ["metaedit", "--force-rewrite", change_id];
+    pub fn git_fetch(flag: Option<&str>, value: Option<&str>, global_args: GlobalArgs) -> Self {
+        let mut args = vec!["git", "fetch"];
+        if let Some(flag) = flag {
+            args.push(flag);
+        }
+        if let Some(value) = value {
+            args.push(value);
+        }
         Self::_new(&args, global_args, None, ReturnOutput::Stderr)
     }
 
-    pub fn fetch(global_args: GlobalArgs) -> Self {
-        let args = ["git", "fetch"];
-        Self::_new(&args, global_args, None, ReturnOutput::Stderr)
-    }
-
-    pub fn fetch_all_remotes(global_args: GlobalArgs) -> Self {
-        let args = ["git", "fetch", "--all-remotes"];
-        Self::_new(&args, global_args, None, ReturnOutput::Stderr)
-    }
-
-    pub fn fetch_tracked(global_args: GlobalArgs) -> Self {
-        let args = ["git", "fetch", "--tracked"];
-        Self::_new(&args, global_args, None, ReturnOutput::Stderr)
-    }
-
-    pub fn fetch_branch(branch: &str, global_args: GlobalArgs) -> Self {
-        let args = ["git", "fetch", "-b", branch];
-        Self::_new(&args, global_args, None, ReturnOutput::Stderr)
-    }
-
-    pub fn fetch_remote(remote: &str, global_args: GlobalArgs) -> Self {
-        let args = ["git", "fetch", "--remote", remote];
-        Self::_new(&args, global_args, None, ReturnOutput::Stderr)
-    }
-
-    pub fn push(global_args: GlobalArgs) -> Self {
-        let args = ["git", "push"];
-        Self::_new(&args, global_args, None, ReturnOutput::Stderr)
-    }
-
-    pub fn push_all(global_args: GlobalArgs) -> Self {
-        let args = ["git", "push", "--all"];
-        Self::_new(&args, global_args, None, ReturnOutput::Stderr)
-    }
-
-    pub fn push_revision(change_id: &str, global_args: GlobalArgs) -> Self {
-        let args = ["git", "push", "-r", change_id];
-        Self::_new(&args, global_args, None, ReturnOutput::Stderr)
-    }
-
-    pub fn push_tracked(global_args: GlobalArgs) -> Self {
-        let args = ["git", "push", "--tracked"];
-        Self::_new(&args, global_args, None, ReturnOutput::Stderr)
-    }
-
-    pub fn push_deleted(global_args: GlobalArgs) -> Self {
-        let args = ["git", "push", "--deleted"];
-        Self::_new(&args, global_args, None, ReturnOutput::Stderr)
-    }
-
-    pub fn push_change(change_id: &str, global_args: GlobalArgs) -> Self {
-        let args = ["git", "push", "-c", change_id];
-        Self::_new(&args, global_args, None, ReturnOutput::Stderr)
-    }
-
-    pub fn push_named(name: &str, change_id: &str, global_args: GlobalArgs) -> Self {
-        let named_arg = format!("{}={}", name, change_id);
-        let args = ["git", "push", "--named", &named_arg];
-        Self::_new(&args, global_args, None, ReturnOutput::Stderr)
-    }
-
-    pub fn push_bookmark(bookmark_name: &str, global_args: GlobalArgs) -> Self {
-        let args = ["git", "push", "-b", bookmark_name];
+    pub fn git_push(flag: Option<&str>, value: Option<&str>, global_args: GlobalArgs) -> Self {
+        let mut args = vec!["git", "push"];
+        if let Some(flag) = flag {
+            args.push(flag);
+        }
+        if let Some(value) = value {
+            args.push(value);
+        }
         Self::_new(&args, global_args, None, ReturnOutput::Stderr)
     }
 
@@ -704,22 +465,26 @@ impl JjCommand {
         Self::_new(&args, global_args, None, ReturnOutput::Stderr)
     }
 
-    pub fn bookmark_forget(bookmark_names: &str, global_args: GlobalArgs) -> Self {
-        let args = ["bookmark", "forget", bookmark_names];
-        Self::_new(&args, global_args, None, ReturnOutput::Stderr)
-    }
-
-    pub fn bookmark_forget_include_remotes(bookmark_names: &str, global_args: GlobalArgs) -> Self {
-        let args = ["bookmark", "forget", "--include-remotes", bookmark_names];
+    pub fn bookmark_forget(
+        bookmark_names: &str,
+        include_remotes: bool,
+        global_args: GlobalArgs,
+    ) -> Self {
+        let mut args = vec!["bookmark", "forget"];
+        if include_remotes {
+            args.push("--include-remotes");
+        }
+        args.push(bookmark_names);
         Self::_new(&args, global_args, None, ReturnOutput::Stderr)
     }
 
     pub fn bookmark_move(
         from_change_id: &str,
         to_change_id: &str,
+        allow_backwards: bool,
         global_args: GlobalArgs,
     ) -> Self {
-        let args = [
+        let mut args = vec![
             "bookmark",
             "move",
             "--from",
@@ -727,35 +492,9 @@ impl JjCommand {
             "--to",
             to_change_id,
         ];
-        Self::_new(&args, global_args, None, ReturnOutput::Stderr)
-    }
-
-    pub fn bookmark_move_allow_backwards(
-        from_change_id: &str,
-        to_change_id: &str,
-        global_args: GlobalArgs,
-    ) -> Self {
-        let args = [
-            "bookmark",
-            "move",
-            "--from",
-            from_change_id,
-            "--to",
-            to_change_id,
-            "--allow-backwards",
-        ];
-        Self::_new(&args, global_args, None, ReturnOutput::Stderr)
-    }
-
-    pub fn bookmark_move_tug(change_id: &str, global_args: GlobalArgs) -> Self {
-        let args = [
-            "bookmark",
-            "move",
-            "--from",
-            "heads(::@- & bookmarks())",
-            "--to",
-            change_id,
-        ];
+        if allow_backwards {
+            args.push("--allow-backwards");
+        }
         Self::_new(&args, global_args, None, ReturnOutput::Stderr)
     }
 
@@ -847,9 +586,9 @@ impl std::fmt::Display for JjCommandError {
 impl std::error::Error for JjCommandError {}
 
 #[derive(Debug)]
-pub struct JjCommandOutput {
-    pub stdout: String,
-    pub stderr: String,
+struct JjCommandOutput {
+    stdout: String,
+    stderr: String,
 }
 
 pub fn get_input_from_editor(

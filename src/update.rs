@@ -7,18 +7,20 @@ const EVENT_POLL_DURATION: Duration = Duration::from_millis(200);
 
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum Message {
-    Abandon,
-    AbandonRestoreDescendants,
-    AbandonRetainBookmarks,
-    Absorb,
-    AbsorbInto,
+    Abandon {
+        mode: AbandonMode,
+    },
+    Absorb {
+        mode: AbsorbMode,
+    },
     BookmarkCreate,
     BookmarkDelete,
-    BookmarkForget,
-    BookmarkForgetIncludeRemotes,
-    BookmarkMove,
-    BookmarkMoveAllowBackwards,
-    BookmarkMoveTug,
+    BookmarkForget {
+        include_remotes: bool,
+    },
+    BookmarkMove {
+        mode: BookmarkMoveMode,
+    },
     BookmarkRename,
     BookmarkSet,
     BookmarkTrack,
@@ -26,63 +28,44 @@ pub enum Message {
     Clear,
     Commit,
     Describe,
-    Duplicate,
-    DuplicateInsertAfter,
-    DuplicateInsertBefore,
-    DuplicateOnto,
+    Duplicate {
+        destination_type: DuplicateDestinationType,
+        destination: DuplicateDestination,
+    },
     Edit,
-    Evolog,
-    EvologPatch,
+    Evolog {
+        patch: bool,
+    },
     FileTrack,
     FileUntrack,
-    GitFetch,
-    GitFetchAllRemotes,
-    GitFetchBranch,
-    GitFetchRemote,
-    GitFetchTracked,
-    GitPush,
-    GitPushAll,
-    GitPushBookmark,
-    GitPushChange,
-    GitPushDeleted,
-    GitPushNamed,
-    GitPushRevision,
-    GitPushTracked,
-    InterdiffFromSelection,
-    InterdiffFromSelectionToDestination,
-    InterdiffToSelection,
+    GitFetch {
+        mode: GitFetchMode,
+    },
+    GitPush {
+        mode: GitPushMode,
+    },
+    Interdiff {
+        mode: InterdiffMode,
+    },
     LeftMouseClick {
         row: u16,
         column: u16,
     },
-    MetaeditForceRewrite,
-    MetaeditSetAuthor,
-    MetaeditSetAuthorTimestamp,
-    MetaeditUpdateAuthor,
-    MetaeditUpdateAuthorTimestamp,
-    MetaeditUpdateChangeId,
-    New,
-    NewAfterTrunk,
+    Metaedit {
+        action: MetaeditAction,
+    },
+    New {
+        mode: NewMode,
+    },
     NewAfterTrunkSync,
-    NewBefore,
-    NewInsertAfter,
-    Next,
-    NextConflict,
-    NextEdit,
-    NextEditOffset,
-    NextNoEdit,
-    NextNoEditOffset,
-    NextOffset,
-    Parallelize,
-    ParallelizeRange,
-    ParallelizeRevset,
-    Prev,
-    PrevConflict,
-    PrevEdit,
-    PrevEditOffset,
-    PrevNoEdit,
-    PrevNoEditOffset,
-    PrevOffset,
+    NextPrev {
+        direction: NextPrevDirection,
+        mode: NextPrevMode,
+        offset: bool,
+    },
+    Parallelize {
+        source: ParallelizeSource,
+    },
     Quit,
     Rebase {
         source_type: RebaseSourceType,
@@ -91,15 +74,14 @@ pub enum Message {
     },
     Redo,
     Refresh,
-    Restore,
-    RestoreFrom,
-    RestoreFromInto,
-    RestoreInto,
-    RestoreRestoreDescendants,
-    Revert,
-    RevertInsertAfter,
-    RevertInsertBefore,
-    RevertOntoDestination,
+    Restore {
+        mode: RestoreMode,
+    },
+    Revert {
+        revision: RevertRevision,
+        destination_type: RevertDestinationType,
+        destination: RevertDestination,
+    },
     RightMouseClick {
         row: u16,
         column: u16,
@@ -117,29 +99,131 @@ pub enum Message {
     SelectPrevSiblingNode,
     SetRevset,
     ShowHelp,
-    Sign,
-    SignRange,
-    SimplifyParents,
-    SimplifyParentsSource,
-    Squash,
-    SquashInto,
+    Sign {
+        action: SignAction,
+        range: bool,
+    },
+    SimplifyParents {
+        mode: SimplifyParentsMode,
+    },
+    Squash {
+        mode: SquashMode,
+    },
     Status,
     ToggleIgnoreImmutable,
     ToggleLogListFold,
     Undo,
-    Unsign,
-    UnsignRange,
-    View,
-    ViewFromSelection,
-    ViewFromSelectionToDestination,
-    ViewToSelection,
+    View {
+        mode: ViewMode,
+    },
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]
-pub enum RebaseSourceType {
+pub enum AbandonMode {
+    Default,
+    RetainBookmarks,
+    RestoreDescendants,
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum AbsorbMode {
+    Default,
+    Into,
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum BookmarkMoveMode {
+    AllowBackwards,
+    Default,
+    Tug,
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum DuplicateDestination {
+    Default,
+    Selection,
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum DuplicateDestinationType {
+    Default,
+    InsertAfter,
+    InsertBefore,
+    Onto,
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum GitFetchMode {
+    Default,
+    AllRemotes,
     Branch,
-    Source,
-    Revisions,
+    Remote,
+    Tracked,
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum GitPushMode {
+    Default,
+    All,
+    Bookmark,
+    Change,
+    Deleted,
+    Named,
+    Revision,
+    Tracked,
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum InterdiffMode {
+    FromSelection,
+    FromSelectionToDestination,
+    ToSelection,
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum MetaeditAction {
+    ForceRewrite,
+    SetAuthor,
+    SetAuthorTimestamp,
+    UpdateAuthor,
+    UpdateAuthorTimestamp,
+    UpdateChangeId,
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum NewMode {
+    AfterTrunk,
+    Before,
+    Default,
+    InsertAfter,
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum NextPrevDirection {
+    Next,
+    Prev,
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum NextPrevMode {
+    Conflict,
+    Default,
+    Edit,
+    NoEdit,
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum ParallelizeSource {
+    Range,
+    Revset,
+    Selection,
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum RebaseDestination {
+    Current,
+    Selection,
+    Trunk,
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]
@@ -150,10 +234,64 @@ pub enum RebaseDestinationType {
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]
-pub enum RebaseDestination {
-    Selection,
-    Trunk,
+pub enum RebaseSourceType {
+    Branch,
+    Revisions,
+    Source,
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum RestoreMode {
+    ChangesIn,
+    ChangesInRestoreDescendants,
+    From,
+    FromInto,
+    Into,
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum RevertDestination {
     Current,
+    Selection,
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum RevertDestinationType {
+    InsertAfter,
+    InsertBefore,
+    Onto,
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum RevertRevision {
+    Saved,
+    Selection,
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum SignAction {
+    Sign,
+    Unsign,
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum SimplifyParentsMode {
+    Revisions,
+    Source,
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum SquashMode {
+    Default,
+    Into,
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum ViewMode {
+    Default,
+    FromSelection,
+    FromSelectionToDestination,
+    ToSelection,
 }
 
 pub fn update(terminal: Term, model: &mut Model) -> Result<()> {
@@ -228,139 +366,87 @@ fn handle_mouse(mouse: event::MouseEvent) -> Option<Message> {
 fn handle_msg(term: Term, model: &mut Model, msg: Message) -> Result<Option<Message>> {
     match msg {
         // General
-        Message::Refresh => model.refresh()?,
         Message::Clear => model.clear(),
-        Message::ToggleIgnoreImmutable => model.toggle_ignore_immutable(),
+        Message::Quit => model.quit(),
+        Message::Refresh => model.refresh()?,
         Message::SetRevset => model.set_revset(term)?,
         Message::ShowHelp => model.show_help(),
-        Message::Quit => model.quit(),
+        Message::ToggleIgnoreImmutable => model.toggle_ignore_immutable(),
 
         // Navigation
         Message::ScrollDownPage => model.scroll_down_page(),
         Message::ScrollUpPage => model.scroll_up_page(),
-        Message::SelectNextNode => model.select_next_node(),
-        Message::SelectPrevNode => model.select_prev_node(),
-        Message::SelectNextSiblingNode => model.select_current_next_sibling_node()?,
-        Message::SelectPrevSiblingNode => model.select_current_prev_sibling_node()?,
-        Message::SelectParentNode => model.select_parent_node()?,
         Message::SelectCurrentWorkingCopy => model.select_current_working_copy(),
+        Message::SelectNextNode => model.select_next_node(),
+        Message::SelectNextSiblingNode => model.select_current_next_sibling_node()?,
+        Message::SelectParentNode => model.select_parent_node()?,
+        Message::SelectPrevNode => model.select_prev_node(),
+        Message::SelectPrevSiblingNode => model.select_current_prev_sibling_node()?,
         Message::ToggleLogListFold => model.toggle_current_fold()?,
 
         // Mouse
-        Message::ScrollDown => model.scroll_down_once(),
-        Message::ScrollUp => model.scroll_up_once(),
         Message::LeftMouseClick { row, column } => model.handle_mouse_click(row, column),
         Message::RightMouseClick { row, column } => {
             model.handle_mouse_click(row, column);
             model.toggle_current_fold()?;
         }
+        Message::ScrollDown => model.scroll_down_once(),
+        Message::ScrollUp => model.scroll_up_once(),
 
         // Commands
-        Message::Abandon => model.jj_abandon()?,
-        Message::AbandonRestoreDescendants => model.jj_abandon_restore_descendants()?,
-        Message::AbandonRetainBookmarks => model.jj_abandon_retain_bookmarks()?,
-        Message::Absorb => model.jj_absorb()?,
-        Message::AbsorbInto => model.jj_absorb_into()?,
+        Message::Abandon { mode } => model.jj_abandon(mode)?,
+        Message::Absorb { mode } => model.jj_absorb(mode)?,
         Message::BookmarkCreate => model.jj_bookmark_create(term)?,
         Message::BookmarkDelete => model.jj_bookmark_delete(term)?,
-        Message::BookmarkForget => model.jj_bookmark_forget(term)?,
-        Message::BookmarkForgetIncludeRemotes => model.jj_bookmark_forget_include_remotes(term)?,
-        Message::BookmarkMove => model.jj_bookmark_move()?,
-        Message::BookmarkMoveAllowBackwards => model.jj_bookmark_move_allow_backwards()?,
-        Message::BookmarkMoveTug => model.jj_bookmark_move_tug()?,
+        Message::BookmarkForget { include_remotes } => {
+            model.jj_bookmark_forget(include_remotes, term)?
+        }
+        Message::BookmarkMove { mode } => model.jj_bookmark_move(mode)?,
         Message::BookmarkRename => model.jj_bookmark_rename(term)?,
         Message::BookmarkSet => model.jj_bookmark_set(term)?,
         Message::BookmarkTrack => model.jj_bookmark_track(term)?,
         Message::BookmarkUntrack => model.jj_bookmark_untrack(term)?,
         Message::Commit => model.jj_commit(term)?,
         Message::Describe => model.jj_describe(term)?,
-        Message::Duplicate => model.jj_duplicate()?,
-        Message::DuplicateInsertAfter => model.jj_duplicate_insert_after()?,
-        Message::DuplicateInsertBefore => model.jj_duplicate_insert_before()?,
-        Message::DuplicateOnto => model.jj_duplicate_onto()?,
+        Message::Duplicate {
+            destination_type,
+            destination,
+        } => model.jj_duplicate(destination_type, destination)?,
         Message::Edit => model.jj_edit()?,
-        Message::Evolog => model.jj_evolog(term)?,
-        Message::EvologPatch => model.jj_evolog_patch(term)?,
+        Message::Evolog { patch } => model.jj_evolog(patch, term)?,
         Message::FileTrack => model.jj_file_track(term)?,
         Message::FileUntrack => model.jj_file_untrack()?,
-        Message::GitFetch => model.jj_fetch()?,
-        Message::GitFetchAllRemotes => model.jj_fetch_all_remotes()?,
-        Message::GitFetchBranch => model.jj_fetch_branch(term)?,
-        Message::GitFetchRemote => model.jj_fetch_remote(term)?,
-        Message::GitFetchTracked => model.jj_fetch_tracked()?,
-        Message::GitPush => model.jj_push()?,
-        Message::GitPushAll => model.jj_push_all()?,
-        Message::GitPushBookmark => model.jj_push_bookmark(term)?,
-        Message::GitPushChange => model.jj_push_change()?,
-        Message::GitPushDeleted => model.jj_push_deleted()?,
-        Message::GitPushNamed => model.jj_push_named(term)?,
-        Message::GitPushRevision => model.jj_push_revision()?,
-        Message::GitPushTracked => model.jj_push_tracked()?,
-        Message::InterdiffFromSelection => model.jj_interdiff_from_selection(term)?,
-        Message::InterdiffFromSelectionToDestination => {
-            model.jj_interdiff_from_selection_to_destination(term)?
-        }
-        Message::InterdiffToSelection => model.jj_interdiff_to_selection(term)?,
-        Message::MetaeditForceRewrite => model.jj_metaedit_force_rewrite()?,
-        Message::MetaeditSetAuthor => model.jj_metaedit_set_author(term)?,
-        Message::MetaeditSetAuthorTimestamp => model.jj_metaedit_set_author_timestamp(term)?,
-        Message::MetaeditUpdateAuthor => model.jj_metaedit_update_author()?,
-        Message::MetaeditUpdateAuthorTimestamp => model.jj_metaedit_update_author_timestamp()?,
-        Message::MetaeditUpdateChangeId => model.jj_metaedit_update_change_id()?,
-        Message::Next => model.jj_next()?,
-        Message::NextConflict => model.jj_next_conflict()?,
-        Message::NextEdit => model.jj_next_edit()?,
-        Message::NextEditOffset => model.jj_next_edit_offset(term)?,
-        Message::NextNoEdit => model.jj_next_no_edit()?,
-        Message::NextNoEditOffset => model.jj_next_no_edit_offset(term)?,
-        Message::NextOffset => model.jj_next_offset(term)?,
-        Message::New => model.jj_new()?,
-        Message::NewAfterTrunk => model.jj_new_after_trunk()?,
+        Message::GitFetch { mode } => model.jj_git_fetch(mode, term)?,
+        Message::GitPush { mode } => model.jj_git_push(mode, term)?,
+        Message::Interdiff { mode } => model.jj_interdiff(mode, term)?,
+        Message::Metaedit { action } => model.jj_metaedit(action, term)?,
+        Message::New { mode } => model.jj_new(mode)?,
         Message::NewAfterTrunkSync => model.jj_new_after_trunk_sync()?,
-        Message::NewBefore => model.jj_new_before()?,
-        Message::NewInsertAfter => model.jj_new_insert_after()?,
-        Message::Parallelize => model.jj_parallelize()?,
-        Message::ParallelizeRange => model.jj_parallelize_range()?,
-        Message::ParallelizeRevset => model.jj_parallelize_revset(term)?,
-        Message::Prev => model.jj_prev()?,
-        Message::PrevConflict => model.jj_prev_conflict()?,
-        Message::PrevEdit => model.jj_prev_edit()?,
-        Message::PrevEditOffset => model.jj_prev_edit_offset(term)?,
-        Message::PrevNoEdit => model.jj_prev_no_edit()?,
-        Message::PrevNoEditOffset => model.jj_prev_no_edit_offset(term)?,
-        Message::PrevOffset => model.jj_prev_offset(term)?,
+        Message::NextPrev {
+            direction,
+            mode,
+            offset,
+        } => model.jj_next_prev(direction, mode, offset, term)?,
+        Message::Parallelize { source } => model.jj_parallelize(source, term)?,
         Message::Rebase {
             source_type,
             destination_type,
             destination,
         } => model.jj_rebase(source_type, destination_type, destination)?,
         Message::Redo => model.jj_redo()?,
-        Message::Restore => model.jj_restore()?,
-        Message::Revert => model.jj_revert()?,
-        Message::RevertInsertAfter => model.jj_revert_insert_after()?,
-        Message::RevertInsertBefore => model.jj_revert_insert_before()?,
-        Message::RevertOntoDestination => model.jj_revert_onto_destination()?,
-        Message::RestoreFrom => model.jj_restore_from()?,
-        Message::RestoreFromInto => model.jj_restore_from_into()?,
-        Message::RestoreInto => model.jj_restore_into()?,
-        Message::RestoreRestoreDescendants => model.jj_restore_restore_descendants()?,
+        Message::Restore { mode } => model.jj_restore(mode)?,
+        Message::Revert {
+            revision,
+            destination_type,
+            destination,
+        } => model.jj_revert(revision, destination_type, destination)?,
         Message::SaveSelection => model.save_selection()?,
-        Message::View => model.jj_view(term)?,
-        Message::Sign => model.jj_sign()?,
-        Message::SignRange => model.jj_sign_range()?,
-        Message::SimplifyParents => model.jj_simplify_parents()?,
-        Message::SimplifyParentsSource => model.jj_simplify_parents_source()?,
-        Message::Squash => model.jj_squash(term)?,
-        Message::SquashInto => model.jj_squash_into(term)?,
+        Message::Sign { action, range } => model.jj_sign(action, range)?,
+        Message::SimplifyParents { mode } => model.jj_simplify_parents(mode)?,
+        Message::Squash { mode } => model.jj_squash(mode, term)?,
         Message::Status => model.jj_status(term)?,
         Message::Undo => model.jj_undo()?,
-        Message::Unsign => model.jj_unsign()?,
-        Message::UnsignRange => model.jj_unsign_range()?,
-        Message::ViewFromSelection => model.jj_view_from_selection(term)?,
-        Message::ViewFromSelectionToDestination => {
-            model.jj_view_from_selection_to_destination(term)?
-        }
-        Message::ViewToSelection => model.jj_view_to_selection(term)?,
+        Message::View { mode } => model.jj_view(mode, term)?,
     };
 
     Ok(None)
