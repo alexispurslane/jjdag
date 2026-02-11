@@ -1,4 +1,4 @@
-use crate::update::Message;
+use crate::update::{Message, RebaseDestination, RebaseDestinationType, RebaseSourceType};
 use crossterm::event::KeyCode;
 use indexmap::IndexMap;
 use ratatui::{
@@ -860,99 +860,480 @@ impl CommandTree {
             ),
             (
                 "Rebase",
-                "Selection onto trunk",
-                vec![KeyCode::Char('r'), KeyCode::Char('m')],
-                CommandTreeNode::new_action(Message::RebaseOntoTrunk),
-            ),
-            (
-                "Rebase",
-                "Selected branch onto trunk",
-                vec![KeyCode::Char('r'), KeyCode::Char('M')],
-                CommandTreeNode::new_action(Message::RebaseBranchOntoTrunk),
-            ),
-            (
-                "Rebase",
-                "Selection onto destination",
-                vec![KeyCode::Char('r'), KeyCode::Char('o')],
-                CommandTreeNode::new_action_with_children(Message::SaveSelection),
-            ),
-            (
-                "Rebase onto",
-                "Select destination",
-                vec![KeyCode::Char('r'), KeyCode::Char('o'), KeyCode::Enter],
-                CommandTreeNode::new_action(Message::RebaseOntoDestination),
-            ),
-            (
-                "Rebase",
-                "Selected branch onto destination",
-                vec![KeyCode::Char('r'), KeyCode::Char('O')],
-                CommandTreeNode::new_action_with_children(Message::SaveSelection),
-            ),
-            (
-                "Rebase branch onto",
-                "Select destination",
-                vec![KeyCode::Char('r'), KeyCode::Char('O'), KeyCode::Enter],
-                CommandTreeNode::new_action(Message::RebaseBranchOntoDestination),
-            ),
-            (
-                "Rebase",
-                "Selection onto destination (no descendants)",
-                vec![KeyCode::Char('r'), KeyCode::Char('r')],
-                CommandTreeNode::new_action_with_children(Message::SaveSelection),
-            ),
-            (
-                "Rebase revision onto",
-                "Select destination",
-                vec![KeyCode::Char('r'), KeyCode::Char('r'), KeyCode::Enter],
-                CommandTreeNode::new_action(Message::RebaseOntoDestinationNoDescendants),
-            ),
-            (
-                "Rebase",
-                "Selection after destination",
-                vec![KeyCode::Char('r'), KeyCode::Char('a')],
-                CommandTreeNode::new_action_with_children(Message::SaveSelection),
-            ),
-            (
-                "Rebase after",
-                "Select destination",
-                vec![KeyCode::Char('r'), KeyCode::Char('a'), KeyCode::Enter],
-                CommandTreeNode::new_action(Message::RebaseAfterDestination),
-            ),
-            (
-                "Rebase",
-                "Selection after destination (no descendants)",
-                vec![KeyCode::Char('r'), KeyCode::Char('A')],
-                CommandTreeNode::new_action_with_children(Message::SaveSelection),
-            ),
-            (
-                "Rebase after",
-                "Select destination",
-                vec![KeyCode::Char('r'), KeyCode::Char('A'), KeyCode::Enter],
-                CommandTreeNode::new_action(Message::RebaseAfterDestinationNoDescendants),
-            ),
-            (
-                "Rebase",
-                "Selection before destination",
+                "Selected branch",
                 vec![KeyCode::Char('r'), KeyCode::Char('b')],
                 CommandTreeNode::new_action_with_children(Message::SaveSelection),
             ),
             (
-                "Rebase before",
-                "Select destination",
-                vec![KeyCode::Char('r'), KeyCode::Char('b'), KeyCode::Enter],
-                CommandTreeNode::new_action(Message::RebaseBeforeDestination),
-            ),
-            (
                 "Rebase",
-                "Selection before destination (no descendants)",
-                vec![KeyCode::Char('r'), KeyCode::Char('B')],
+                "Selected source",
+                vec![KeyCode::Char('r'), KeyCode::Char('s')],
                 CommandTreeNode::new_action_with_children(Message::SaveSelection),
             ),
             (
-                "Rebase before",
+                "Rebase",
+                "Selected revision",
+                vec![KeyCode::Char('r'), KeyCode::Char('r')],
+                CommandTreeNode::new_action_with_children(Message::SaveSelection),
+            ),
+            (
+                "Rebase branch",
+                "Insert after",
+                vec![KeyCode::Char('r'), KeyCode::Char('b'), KeyCode::Char('a')],
+                CommandTreeNode::new_children(),
+            ),
+            (
+                "Rebase branch",
+                "Insert before",
+                vec![KeyCode::Char('r'), KeyCode::Char('b'), KeyCode::Char('b')],
+                CommandTreeNode::new_children(),
+            ),
+            (
+                "Rebase branch",
+                "Onto",
+                vec![KeyCode::Char('r'), KeyCode::Char('b'), KeyCode::Char('o')],
+                CommandTreeNode::new_children(),
+            ),
+            (
+                "Rebase branch after",
                 "Select destination",
-                vec![KeyCode::Char('r'), KeyCode::Char('B'), KeyCode::Enter],
-                CommandTreeNode::new_action(Message::RebaseBeforeDestinationNoDescendants),
+                vec![
+                    KeyCode::Char('r'),
+                    KeyCode::Char('b'),
+                    KeyCode::Char('a'),
+                    KeyCode::Enter,
+                ],
+                CommandTreeNode::new_action(Message::Rebase {
+                    source_type: RebaseSourceType::Branch,
+                    destination_type: RebaseDestinationType::InsertAfter,
+                    destination: RebaseDestination::Selection,
+                }),
+            ),
+            (
+                "Rebase branch after",
+                "Trunk",
+                vec![
+                    KeyCode::Char('r'),
+                    KeyCode::Char('b'),
+                    KeyCode::Char('a'),
+                    KeyCode::Char('m'),
+                ],
+                CommandTreeNode::new_action(Message::Rebase {
+                    source_type: RebaseSourceType::Branch,
+                    destination_type: RebaseDestinationType::InsertAfter,
+                    destination: RebaseDestination::Trunk,
+                }),
+            ),
+            (
+                "Rebase branch after",
+                "@",
+                vec![
+                    KeyCode::Char('r'),
+                    KeyCode::Char('b'),
+                    KeyCode::Char('a'),
+                    KeyCode::Char('c'),
+                ],
+                CommandTreeNode::new_action(Message::Rebase {
+                    source_type: RebaseSourceType::Branch,
+                    destination_type: RebaseDestinationType::InsertAfter,
+                    destination: RebaseDestination::Current,
+                }),
+            ),
+            (
+                "Rebase branch before",
+                "Select destination",
+                vec![
+                    KeyCode::Char('r'),
+                    KeyCode::Char('b'),
+                    KeyCode::Char('b'),
+                    KeyCode::Enter,
+                ],
+                CommandTreeNode::new_action(Message::Rebase {
+                    source_type: RebaseSourceType::Branch,
+                    destination_type: RebaseDestinationType::InsertBefore,
+                    destination: RebaseDestination::Selection,
+                }),
+            ),
+            (
+                "Rebase branch before",
+                "Trunk",
+                vec![
+                    KeyCode::Char('r'),
+                    KeyCode::Char('b'),
+                    KeyCode::Char('b'),
+                    KeyCode::Char('m'),
+                ],
+                CommandTreeNode::new_action(Message::Rebase {
+                    source_type: RebaseSourceType::Branch,
+                    destination_type: RebaseDestinationType::InsertBefore,
+                    destination: RebaseDestination::Trunk,
+                }),
+            ),
+            (
+                "Rebase branch before",
+                "@",
+                vec![
+                    KeyCode::Char('r'),
+                    KeyCode::Char('b'),
+                    KeyCode::Char('b'),
+                    KeyCode::Char('c'),
+                ],
+                CommandTreeNode::new_action(Message::Rebase {
+                    source_type: RebaseSourceType::Branch,
+                    destination_type: RebaseDestinationType::InsertBefore,
+                    destination: RebaseDestination::Current,
+                }),
+            ),
+            (
+                "Rebase branch onto",
+                "Select destination",
+                vec![
+                    KeyCode::Char('r'),
+                    KeyCode::Char('b'),
+                    KeyCode::Char('o'),
+                    KeyCode::Enter,
+                ],
+                CommandTreeNode::new_action(Message::Rebase {
+                    source_type: RebaseSourceType::Branch,
+                    destination_type: RebaseDestinationType::Onto,
+                    destination: RebaseDestination::Selection,
+                }),
+            ),
+            (
+                "Rebase branch onto",
+                "Trunk",
+                vec![
+                    KeyCode::Char('r'),
+                    KeyCode::Char('b'),
+                    KeyCode::Char('o'),
+                    KeyCode::Char('m'),
+                ],
+                CommandTreeNode::new_action(Message::Rebase {
+                    source_type: RebaseSourceType::Branch,
+                    destination_type: RebaseDestinationType::Onto,
+                    destination: RebaseDestination::Trunk,
+                }),
+            ),
+            (
+                "Rebase branch onto",
+                "@",
+                vec![
+                    KeyCode::Char('r'),
+                    KeyCode::Char('b'),
+                    KeyCode::Char('o'),
+                    KeyCode::Char('c'),
+                ],
+                CommandTreeNode::new_action(Message::Rebase {
+                    source_type: RebaseSourceType::Branch,
+                    destination_type: RebaseDestinationType::Onto,
+                    destination: RebaseDestination::Current,
+                }),
+            ),
+            (
+                "Rebase source",
+                "Insert after",
+                vec![KeyCode::Char('r'), KeyCode::Char('s'), KeyCode::Char('a')],
+                CommandTreeNode::new_children(),
+            ),
+            (
+                "Rebase source",
+                "Insert before",
+                vec![KeyCode::Char('r'), KeyCode::Char('s'), KeyCode::Char('b')],
+                CommandTreeNode::new_children(),
+            ),
+            (
+                "Rebase source",
+                "Onto",
+                vec![KeyCode::Char('r'), KeyCode::Char('s'), KeyCode::Char('o')],
+                CommandTreeNode::new_children(),
+            ),
+            (
+                "Rebase source after",
+                "Select destination",
+                vec![
+                    KeyCode::Char('r'),
+                    KeyCode::Char('s'),
+                    KeyCode::Char('a'),
+                    KeyCode::Enter,
+                ],
+                CommandTreeNode::new_action(Message::Rebase {
+                    source_type: RebaseSourceType::Source,
+                    destination_type: RebaseDestinationType::InsertAfter,
+                    destination: RebaseDestination::Selection,
+                }),
+            ),
+            (
+                "Rebase source after",
+                "Trunk",
+                vec![
+                    KeyCode::Char('r'),
+                    KeyCode::Char('s'),
+                    KeyCode::Char('a'),
+                    KeyCode::Char('m'),
+                ],
+                CommandTreeNode::new_action(Message::Rebase {
+                    source_type: RebaseSourceType::Source,
+                    destination_type: RebaseDestinationType::InsertAfter,
+                    destination: RebaseDestination::Trunk,
+                }),
+            ),
+            (
+                "Rebase source after",
+                "@",
+                vec![
+                    KeyCode::Char('r'),
+                    KeyCode::Char('s'),
+                    KeyCode::Char('a'),
+                    KeyCode::Char('c'),
+                ],
+                CommandTreeNode::new_action(Message::Rebase {
+                    source_type: RebaseSourceType::Source,
+                    destination_type: RebaseDestinationType::InsertAfter,
+                    destination: RebaseDestination::Current,
+                }),
+            ),
+            (
+                "Rebase source before",
+                "Select destination",
+                vec![
+                    KeyCode::Char('r'),
+                    KeyCode::Char('s'),
+                    KeyCode::Char('b'),
+                    KeyCode::Enter,
+                ],
+                CommandTreeNode::new_action(Message::Rebase {
+                    source_type: RebaseSourceType::Source,
+                    destination_type: RebaseDestinationType::InsertBefore,
+                    destination: RebaseDestination::Selection,
+                }),
+            ),
+            (
+                "Rebase source before",
+                "Trunk",
+                vec![
+                    KeyCode::Char('r'),
+                    KeyCode::Char('s'),
+                    KeyCode::Char('b'),
+                    KeyCode::Char('m'),
+                ],
+                CommandTreeNode::new_action(Message::Rebase {
+                    source_type: RebaseSourceType::Source,
+                    destination_type: RebaseDestinationType::InsertBefore,
+                    destination: RebaseDestination::Trunk,
+                }),
+            ),
+            (
+                "Rebase source before",
+                "@",
+                vec![
+                    KeyCode::Char('r'),
+                    KeyCode::Char('s'),
+                    KeyCode::Char('b'),
+                    KeyCode::Char('c'),
+                ],
+                CommandTreeNode::new_action(Message::Rebase {
+                    source_type: RebaseSourceType::Source,
+                    destination_type: RebaseDestinationType::InsertBefore,
+                    destination: RebaseDestination::Current,
+                }),
+            ),
+            (
+                "Rebase source onto",
+                "Select destination",
+                vec![
+                    KeyCode::Char('r'),
+                    KeyCode::Char('s'),
+                    KeyCode::Char('o'),
+                    KeyCode::Enter,
+                ],
+                CommandTreeNode::new_action(Message::Rebase {
+                    source_type: RebaseSourceType::Source,
+                    destination_type: RebaseDestinationType::Onto,
+                    destination: RebaseDestination::Selection,
+                }),
+            ),
+            (
+                "Rebase source onto",
+                "Trunk",
+                vec![
+                    KeyCode::Char('r'),
+                    KeyCode::Char('s'),
+                    KeyCode::Char('o'),
+                    KeyCode::Char('m'),
+                ],
+                CommandTreeNode::new_action(Message::Rebase {
+                    source_type: RebaseSourceType::Source,
+                    destination_type: RebaseDestinationType::Onto,
+                    destination: RebaseDestination::Trunk,
+                }),
+            ),
+            (
+                "Rebase source onto",
+                "@",
+                vec![
+                    KeyCode::Char('r'),
+                    KeyCode::Char('s'),
+                    KeyCode::Char('o'),
+                    KeyCode::Char('c'),
+                ],
+                CommandTreeNode::new_action(Message::Rebase {
+                    source_type: RebaseSourceType::Source,
+                    destination_type: RebaseDestinationType::Onto,
+                    destination: RebaseDestination::Current,
+                }),
+            ),
+            (
+                "Rebase revision",
+                "Insert after",
+                vec![KeyCode::Char('r'), KeyCode::Char('r'), KeyCode::Char('a')],
+                CommandTreeNode::new_children(),
+            ),
+            (
+                "Rebase revision",
+                "Insert before",
+                vec![KeyCode::Char('r'), KeyCode::Char('r'), KeyCode::Char('b')],
+                CommandTreeNode::new_children(),
+            ),
+            (
+                "Rebase revision",
+                "Onto",
+                vec![KeyCode::Char('r'), KeyCode::Char('r'), KeyCode::Char('o')],
+                CommandTreeNode::new_children(),
+            ),
+            (
+                "Rebase revision after",
+                "Select destination",
+                vec![
+                    KeyCode::Char('r'),
+                    KeyCode::Char('r'),
+                    KeyCode::Char('a'),
+                    KeyCode::Enter,
+                ],
+                CommandTreeNode::new_action(Message::Rebase {
+                    source_type: RebaseSourceType::Revisions,
+                    destination_type: RebaseDestinationType::InsertAfter,
+                    destination: RebaseDestination::Selection,
+                }),
+            ),
+            (
+                "Rebase revision after",
+                "Trunk",
+                vec![
+                    KeyCode::Char('r'),
+                    KeyCode::Char('r'),
+                    KeyCode::Char('a'),
+                    KeyCode::Char('m'),
+                ],
+                CommandTreeNode::new_action(Message::Rebase {
+                    source_type: RebaseSourceType::Revisions,
+                    destination_type: RebaseDestinationType::InsertAfter,
+                    destination: RebaseDestination::Trunk,
+                }),
+            ),
+            (
+                "Rebase revision after",
+                "@",
+                vec![
+                    KeyCode::Char('r'),
+                    KeyCode::Char('r'),
+                    KeyCode::Char('a'),
+                    KeyCode::Char('c'),
+                ],
+                CommandTreeNode::new_action(Message::Rebase {
+                    source_type: RebaseSourceType::Revisions,
+                    destination_type: RebaseDestinationType::InsertAfter,
+                    destination: RebaseDestination::Current,
+                }),
+            ),
+            (
+                "Rebase revision before",
+                "Select destination",
+                vec![
+                    KeyCode::Char('r'),
+                    KeyCode::Char('r'),
+                    KeyCode::Char('b'),
+                    KeyCode::Enter,
+                ],
+                CommandTreeNode::new_action(Message::Rebase {
+                    source_type: RebaseSourceType::Revisions,
+                    destination_type: RebaseDestinationType::InsertBefore,
+                    destination: RebaseDestination::Selection,
+                }),
+            ),
+            (
+                "Rebase revision before",
+                "Trunk",
+                vec![
+                    KeyCode::Char('r'),
+                    KeyCode::Char('r'),
+                    KeyCode::Char('b'),
+                    KeyCode::Char('m'),
+                ],
+                CommandTreeNode::new_action(Message::Rebase {
+                    source_type: RebaseSourceType::Revisions,
+                    destination_type: RebaseDestinationType::InsertBefore,
+                    destination: RebaseDestination::Trunk,
+                }),
+            ),
+            (
+                "Rebase revision before",
+                "@",
+                vec![
+                    KeyCode::Char('r'),
+                    KeyCode::Char('r'),
+                    KeyCode::Char('b'),
+                    KeyCode::Char('c'),
+                ],
+                CommandTreeNode::new_action(Message::Rebase {
+                    source_type: RebaseSourceType::Revisions,
+                    destination_type: RebaseDestinationType::InsertBefore,
+                    destination: RebaseDestination::Current,
+                }),
+            ),
+            (
+                "Rebase revision onto",
+                "Select destination",
+                vec![
+                    KeyCode::Char('r'),
+                    KeyCode::Char('r'),
+                    KeyCode::Char('o'),
+                    KeyCode::Enter,
+                ],
+                CommandTreeNode::new_action(Message::Rebase {
+                    source_type: RebaseSourceType::Revisions,
+                    destination_type: RebaseDestinationType::Onto,
+                    destination: RebaseDestination::Selection,
+                }),
+            ),
+            (
+                "Rebase revision onto",
+                "Trunk",
+                vec![
+                    KeyCode::Char('r'),
+                    KeyCode::Char('r'),
+                    KeyCode::Char('o'),
+                    KeyCode::Char('m'),
+                ],
+                CommandTreeNode::new_action(Message::Rebase {
+                    source_type: RebaseSourceType::Revisions,
+                    destination_type: RebaseDestinationType::Onto,
+                    destination: RebaseDestination::Trunk,
+                }),
+            ),
+            (
+                "Rebase revision onto",
+                "@",
+                vec![
+                    KeyCode::Char('r'),
+                    KeyCode::Char('r'),
+                    KeyCode::Char('o'),
+                    KeyCode::Char('c'),
+                ],
+                CommandTreeNode::new_action(Message::Rebase {
+                    source_type: RebaseSourceType::Revisions,
+                    destination_type: RebaseDestinationType::Onto,
+                    destination: RebaseDestination::Current,
+                }),
             ),
             (
                 "Commands",

@@ -51,7 +51,10 @@ pub enum Message {
     InterdiffFromSelection,
     InterdiffFromSelectionToDestination,
     InterdiffToSelection,
-    LeftMouseClick { row: u16, column: u16 },
+    LeftMouseClick {
+        row: u16,
+        column: u16,
+    },
     MetaeditForceRewrite,
     MetaeditSetAuthor,
     MetaeditSetAuthorTimestamp,
@@ -81,15 +84,11 @@ pub enum Message {
     PrevNoEditOffset,
     PrevOffset,
     Quit,
-    RebaseAfterDestination,
-    RebaseAfterDestinationNoDescendants,
-    RebaseBeforeDestination,
-    RebaseBeforeDestinationNoDescendants,
-    RebaseBranchOntoDestination,
-    RebaseBranchOntoTrunk,
-    RebaseOntoDestination,
-    RebaseOntoDestinationNoDescendants,
-    RebaseOntoTrunk,
+    Rebase {
+        source_type: RebaseSourceType,
+        destination_type: RebaseDestinationType,
+        destination: RebaseDestination,
+    },
     Redo,
     Refresh,
     Restore,
@@ -101,7 +100,10 @@ pub enum Message {
     RevertInsertAfter,
     RevertInsertBefore,
     RevertOntoDestination,
-    RightMouseClick { row: u16, column: u16 },
+    RightMouseClick {
+        row: u16,
+        column: u16,
+    },
     SaveSelection,
     ScrollDown,
     ScrollDownPage,
@@ -131,6 +133,27 @@ pub enum Message {
     ViewFromSelection,
     ViewFromSelectionToDestination,
     ViewToSelection,
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum RebaseSourceType {
+    Branch,
+    Source,
+    Revisions,
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum RebaseDestinationType {
+    InsertAfter,
+    InsertBefore,
+    Onto,
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum RebaseDestination {
+    Selection,
+    Trunk,
+    Current,
 }
 
 pub fn update(terminal: Term, model: &mut Model) -> Result<()> {
@@ -306,21 +329,11 @@ fn handle_msg(term: Term, model: &mut Model, msg: Message) -> Result<Option<Mess
         Message::PrevNoEdit => model.jj_prev_no_edit()?,
         Message::PrevNoEditOffset => model.jj_prev_no_edit_offset(term)?,
         Message::PrevOffset => model.jj_prev_offset(term)?,
-        Message::RebaseAfterDestination => model.jj_rebase_after_destination()?,
-        Message::RebaseAfterDestinationNoDescendants => {
-            model.jj_rebase_after_destination_no_descendants()?
-        }
-        Message::RebaseBeforeDestination => model.jj_rebase_before_destination()?,
-        Message::RebaseBeforeDestinationNoDescendants => {
-            model.jj_rebase_before_destination_no_descendants()?
-        }
-        Message::RebaseBranchOntoDestination => model.jj_rebase_branch_onto_destination()?,
-        Message::RebaseBranchOntoTrunk => model.jj_rebase_branch_onto_trunk()?,
-        Message::RebaseOntoDestination => model.jj_rebase_onto_destination()?,
-        Message::RebaseOntoDestinationNoDescendants => {
-            model.jj_rebase_onto_destination_no_descendants()?
-        }
-        Message::RebaseOntoTrunk => model.jj_rebase_onto_trunk()?,
+        Message::Rebase {
+            source_type,
+            destination_type,
+            destination,
+        } => model.jj_rebase(source_type, destination_type, destination)?,
         Message::Redo => model.jj_redo()?,
         Message::Restore => model.jj_restore()?,
         Message::Revert => model.jj_revert()?,

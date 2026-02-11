@@ -427,118 +427,14 @@ impl JjCommand {
         Self::_new(&args, global_args, Some(term), ReturnOutput::Stderr)
     }
 
-    pub fn rebase_onto_trunk(change_id: &str, global_args: GlobalArgs) -> Self {
-        let args = vec!["rebase", "--source", change_id, "--onto", "trunk()"];
-        Self::_new(&args, global_args, None, ReturnOutput::Stderr)
-    }
-
-    pub fn rebase_branch_onto_trunk(change_id: &str, global_args: GlobalArgs) -> Self {
-        let args = vec!["rebase", "--branch", change_id, "--onto", "trunk()"];
-        Self::_new(&args, global_args, None, ReturnOutput::Stderr)
-    }
-
-    pub fn rebase_onto_destination(
-        source_change_id: &str,
-        dest_change_id: &str,
+    pub fn rebase(
+        source_type: &str,
+        source: &str,
+        destination_type: &str,
+        destination: &str,
         global_args: GlobalArgs,
     ) -> Self {
-        let args = vec![
-            "rebase",
-            "--source",
-            source_change_id,
-            "--onto",
-            dest_change_id,
-        ];
-        Self::_new(&args, global_args, None, ReturnOutput::Stderr)
-    }
-
-    pub fn rebase_branch_onto_destination(
-        source_change_id: &str,
-        dest_change_id: &str,
-        global_args: GlobalArgs,
-    ) -> Self {
-        let args = vec![
-            "rebase",
-            "--branch",
-            source_change_id,
-            "--onto",
-            dest_change_id,
-        ];
-        Self::_new(&args, global_args, None, ReturnOutput::Stderr)
-    }
-
-    pub fn rebase_onto_destination_no_descendants(
-        source_change_id: &str,
-        dest_change_id: &str,
-        global_args: GlobalArgs,
-    ) -> Self {
-        let args = vec![
-            "rebase",
-            "--revisions",
-            source_change_id,
-            "--onto",
-            dest_change_id,
-        ];
-        Self::_new(&args, global_args, None, ReturnOutput::Stderr)
-    }
-
-    pub fn rebase_after_destination(
-        source_change_id: &str,
-        dest_change_id: &str,
-        global_args: GlobalArgs,
-    ) -> Self {
-        let args = vec![
-            "rebase",
-            "--source",
-            source_change_id,
-            "--insert-after",
-            dest_change_id,
-        ];
-        Self::_new(&args, global_args, None, ReturnOutput::Stderr)
-    }
-
-    pub fn rebase_after_destination_no_descendants(
-        source_change_id: &str,
-        dest_change_id: &str,
-        global_args: GlobalArgs,
-    ) -> Self {
-        let args = vec![
-            "rebase",
-            "--revisions",
-            source_change_id,
-            "--insert-after",
-            dest_change_id,
-        ];
-        Self::_new(&args, global_args, None, ReturnOutput::Stderr)
-    }
-
-    pub fn rebase_before_destination(
-        source_change_id: &str,
-        dest_change_id: &str,
-        global_args: GlobalArgs,
-    ) -> Self {
-        let args = vec![
-            "rebase",
-            "--source",
-            source_change_id,
-            "--insert-before",
-            dest_change_id,
-        ];
-        Self::_new(&args, global_args, None, ReturnOutput::Stderr)
-    }
-
-    pub fn rebase_before_destination_no_descendants(
-        source_change_id: &str,
-        dest_change_id: &str,
-        global_args: GlobalArgs,
-    ) -> Self {
-        let args = vec![
-            "rebase",
-            "--revisions",
-            source_change_id,
-            "--insert-before",
-            dest_change_id,
-        ];
+        let args = vec!["rebase", source_type, source, destination_type, destination];
         Self::_new(&args, global_args, None, ReturnOutput::Stderr)
     }
 

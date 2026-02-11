@@ -3,7 +3,7 @@ use crate::{
     log_tree::{DIFF_HUNK_LINE_IDX, JjLog, TreePosition, get_parent_tree_position},
     shell_out::{JjCommand, JjCommandError, get_input_from_editor},
     terminal::Term,
-    update::Message,
+    update::{Message, RebaseDestination, RebaseDestinationType, RebaseSourceType},
 };
 use ansi_to_tui::IntoText;
 use anyhow::Result;
@@ -768,122 +768,41 @@ impl Model {
         self.queue_jj_command(cmd)
     }
 
-    pub fn jj_rebase_onto_trunk(&mut self) -> Result<()> {
-        let Some(change_id) = self.get_selected_change_id() else {
-            return self.invalid_selection();
-        };
-        let cmd = JjCommand::rebase_onto_trunk(change_id, self.global_args.clone());
-        self.queue_jj_command(cmd)
-    }
-
-    pub fn jj_rebase_branch_onto_trunk(&mut self) -> Result<()> {
-        let Some(change_id) = self.get_selected_change_id() else {
-            return self.invalid_selection();
-        };
-        let cmd = JjCommand::rebase_branch_onto_trunk(change_id, self.global_args.clone());
-        self.queue_jj_command(cmd)
-    }
-
-    pub fn jj_rebase_onto_destination(&mut self) -> Result<()> {
+    pub fn jj_rebase(
+        &mut self,
+        source_type: RebaseSourceType,
+        destination_type: RebaseDestinationType,
+        destination: RebaseDestination,
+    ) -> Result<()> {
         let Some(source_change_id) = self.get_saved_change_id() else {
             return self.invalid_selection();
         };
-        let Some(dest_change_id) = self.get_selected_change_id() else {
-            return self.invalid_selection();
+        let source_type = match source_type {
+            RebaseSourceType::Branch => "--branch",
+            RebaseSourceType::Source => "--source",
+            RebaseSourceType::Revisions => "--revisions",
         };
-        let cmd = JjCommand::rebase_onto_destination(
-            source_change_id,
-            dest_change_id,
-            self.global_args.clone(),
-        );
-        self.queue_jj_command(cmd)
-    }
+        let destination_type = match destination_type {
+            RebaseDestinationType::InsertAfter => "--insert-after",
+            RebaseDestinationType::InsertBefore => "--insert-before",
+            RebaseDestinationType::Onto => "--onto",
+        };
+        let destination = match destination {
+            RebaseDestination::Selection => {
+                let Some(dest_change_id) = self.get_selected_change_id() else {
+                    return self.invalid_selection();
+                };
+                dest_change_id
+            }
+            RebaseDestination::Trunk => "trunk()",
+            RebaseDestination::Current => "@",
+        };
 
-    pub fn jj_rebase_branch_onto_destination(&mut self) -> Result<()> {
-        let Some(source_change_id) = self.get_saved_change_id() else {
-            return self.invalid_selection();
-        };
-        let Some(dest_change_id) = self.get_selected_change_id() else {
-            return self.invalid_selection();
-        };
-        let cmd = JjCommand::rebase_branch_onto_destination(
+        let cmd = JjCommand::rebase(
+            source_type,
             source_change_id,
-            dest_change_id,
-            self.global_args.clone(),
-        );
-        self.queue_jj_command(cmd)
-    }
-
-    pub fn jj_rebase_onto_destination_no_descendants(&mut self) -> Result<()> {
-        let Some(source_change_id) = self.get_saved_change_id() else {
-            return self.invalid_selection();
-        };
-        let Some(dest_change_id) = self.get_selected_change_id() else {
-            return self.invalid_selection();
-        };
-        let cmd = JjCommand::rebase_onto_destination_no_descendants(
-            source_change_id,
-            dest_change_id,
-            self.global_args.clone(),
-        );
-        self.queue_jj_command(cmd)
-    }
-
-    pub fn jj_rebase_after_destination(&mut self) -> Result<()> {
-        let Some(source_change_id) = self.get_saved_change_id() else {
-            return self.invalid_selection();
-        };
-        let Some(dest_change_id) = self.get_selected_change_id() else {
-            return self.invalid_selection();
-        };
-        let cmd = JjCommand::rebase_after_destination(
-            source_change_id,
-            dest_change_id,
-            self.global_args.clone(),
-        );
-        self.queue_jj_command(cmd)
-    }
-
-    pub fn jj_rebase_after_destination_no_descendants(&mut self) -> Result<()> {
-        let Some(source_change_id) = self.get_saved_change_id() else {
-            return self.invalid_selection();
-        };
-        let Some(dest_change_id) = self.get_selected_change_id() else {
-            return self.invalid_selection();
-        };
-        let cmd = JjCommand::rebase_after_destination_no_descendants(
-            source_change_id,
-            dest_change_id,
-            self.global_args.clone(),
-        );
-        self.queue_jj_command(cmd)
-    }
-
-    pub fn jj_rebase_before_destination(&mut self) -> Result<()> {
-        let Some(source_change_id) = self.get_saved_change_id() else {
-            return self.invalid_selection();
-        };
-        let Some(dest_change_id) = self.get_selected_change_id() else {
-            return self.invalid_selection();
-        };
-        let cmd = JjCommand::rebase_before_destination(
-            source_change_id,
-            dest_change_id,
-            self.global_args.clone(),
-        );
-        self.queue_jj_command(cmd)
-    }
-
-    pub fn jj_rebase_before_destination_no_descendants(&mut self) -> Result<()> {
-        let Some(source_change_id) = self.get_saved_change_id() else {
-            return self.invalid_selection();
-        };
-        let Some(dest_change_id) = self.get_selected_change_id() else {
-            return self.invalid_selection();
-        };
-        let cmd = JjCommand::rebase_before_destination_no_descendants(
-            source_change_id,
-            dest_change_id,
+            destination_type,
+            destination,
             self.global_args.clone(),
         );
         self.queue_jj_command(cmd)
