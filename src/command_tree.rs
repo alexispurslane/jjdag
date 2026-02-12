@@ -1038,6 +1038,18 @@ impl CommandTree {
             ),
             (
                 "Rebase",
+                "Selected branch onto trunk",
+                vec![KeyCode::Char('r'), KeyCode::Char('m')],
+                CommandTreeNode::new_action(Message::RebaseSelectedBranchOntoTrunk),
+            ),
+            (
+                "Rebase",
+                "Selected branch onto trunk (sync)",
+                vec![KeyCode::Char('r'), KeyCode::Char('M')],
+                CommandTreeNode::new_action(Message::RebaseSelectedBranchOntoTrunkSync),
+            ),
+            (
+                "Rebase",
                 "Selected source",
                 vec![KeyCode::Char('r'), KeyCode::Char('s')],
                 CommandTreeNode::new_action_with_children(Message::SaveSelection),

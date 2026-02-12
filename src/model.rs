@@ -1040,6 +1040,37 @@ impl Model {
         self.queue_jj_command(cmd)
     }
 
+    pub fn jj_rebase_selected_branch_onto_trunk(&mut self) -> Result<()> {
+        let Some(source_change_id) = self.get_selected_change_id() else {
+            return self.invalid_selection();
+        };
+
+        let cmd = JjCommand::rebase(
+            "--branch",
+            source_change_id,
+            "--onto",
+            "trunk()",
+            self.global_args.clone(),
+        );
+        self.queue_jj_command(cmd)
+    }
+
+    pub fn jj_rebase_selected_branch_onto_trunk_sync(&mut self) -> Result<()> {
+        let Some(source_change_id) = self.get_selected_change_id() else {
+            return self.invalid_selection();
+        };
+
+        let fetch_cmd = JjCommand::git_fetch(None, None, self.global_args.clone());
+        let rebase_cmd = JjCommand::rebase(
+            "--branch",
+            source_change_id,
+            "--onto",
+            "trunk()",
+            self.global_args.clone(),
+        );
+        self.queue_jj_commands(vec![fetch_cmd, rebase_cmd])
+    }
+
     pub fn jj_redo(&mut self) -> Result<()> {
         let cmd = JjCommand::redo(self.global_args.clone());
         self.queue_jj_command(cmd)
