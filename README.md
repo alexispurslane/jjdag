@@ -10,6 +10,52 @@ Very much a work in progress, consider this a pre-alpha release. But I already u
 
 Once you run the program you can press `?` to show the help info. Most of the commands you can see by running `jj help` in the terminal are implemented.
 
+## Features
+
+- Browse the jj log tree with dynamic folding/unfolding of commits and file diffs
+- Multi-key command sequences with contextual help popups. For example type `gpa` to run `jj git push --all`, or `gpt` to run `jj git push --tracked`, or `ss` to squash the selected revision into its parent.
+- Output from jj commands is displayed in the bottom panel
+- Mouse support
+
+## Supported jj commands
+
+- `jj abandon`
+- `jj absorb`
+- `jj bookmark create`
+- `jj bookmark delete`
+- `jj bookmark forget`
+- `jj bookmark move`
+- `jj bookmark rename`
+- `jj bookmark set`
+- `jj bookmark track`
+- `jj bookmark untrack`
+- `jj commit`
+- `jj describe`
+- `jj diff`
+- `jj duplicate`
+- `jj edit`
+- `jj evolog`
+- `jj file track`
+- `jj file untrack`
+- `jj git fetch`
+- `jj git push`
+- `jj interdiff`
+- `jj metaedit`
+- `jj new`
+- `jj next`
+- `jj parallelize`
+- `jj prev`
+- `jj rebase`
+- `jj redo`
+- `jj restore`
+- `jj revert`
+- `jj sign`
+- `jj simplify-parents`
+- `jj squash`
+- `jj status`
+- `jj undo`
+- `jj unsign`
+
 ## Installation
 
 With cargo: 
