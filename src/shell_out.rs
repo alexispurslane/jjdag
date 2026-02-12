@@ -82,7 +82,7 @@ impl JjCommand {
 
         let stderr = String::from_utf8_lossy(&output.stderr).into();
         if output.status.success() {
-            let stdout = String::from_utf8(output.stdout).map_err(JjCommandError::new_other)?;
+            let stdout = String::from_utf8_lossy(&output.stdout).into();
             Ok(JjCommandOutput { stdout, stderr })
         } else {
             Err(JjCommandError::new_failed(stderr))
@@ -97,16 +97,16 @@ impl JjCommand {
         terminal::relinquish_terminal().map_err(JjCommandError::new_other)?;
 
         let mut child = command.spawn().map_err(JjCommandError::new_other)?;
-        let status = child.wait().map_err(JjCommandError::new_other)?;
-
-        let mut stderr = String::new();
-        child
+        let mut stderr_handle = child
             .stderr
             .take()
-            .ok_or_else(|| JjCommandError::new_other(anyhow!("No stderr")))?
-            .read_to_string(&mut stderr)
+            .ok_or_else(|| JjCommandError::new_other(anyhow!("No stderr handle")))?;
+        let mut buf = Vec::new();
+        stderr_handle
+            .read_to_end(&mut buf)
             .map_err(JjCommandError::new_other)?;
-        stderr = strip_non_style_ansi(&stderr);
+        let stderr = strip_non_style_ansi(&String::from_utf8_lossy(&buf));
+        let status = child.wait().map_err(JjCommandError::new_other)?;
 
         terminal::takeover_terminal(term).map_err(JjCommandError::new_other)?;
 
