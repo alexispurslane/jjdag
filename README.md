@@ -12,10 +12,10 @@ Once you run the program you can press `?` to show the help info. Most of the co
 
 ## Features
 
-- Browse the jj log tree with dynamic folding/unfolding of commits and file diffs
-- Multi-key command sequences with contextual help popups. For example type `gpa` to run `jj git push --all`, or `gpt` to run `jj git push --tracked`, or `ss` to squash the selected revision into its parent.
-- Output from jj commands is displayed in the bottom panel
-- Mouse support
+- Browse the jj log tree with dynamic folding/unfolding of commits and file diffs.
+- Multi-key command sequences with transient-menu style help popups. For example type `gpa` to run `jj git push --all`, or `gpt` to run `jj git push --tracked`, or `ss` to squash the selected revision into its parent.
+- Output from jj commands is displayed in the bottom panel.
+- Mouse support: left click to select, right click to toggle folding, and scroll wheel to scroll.
 
 ## Supported jj commands
 
