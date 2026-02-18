@@ -195,10 +195,14 @@ impl JjCommand {
     pub fn diff_from_to_interactive(
         from: &str,
         to: &str,
+        file: Option<&str>,
         global_args: GlobalArgs,
         term: Term,
     ) -> Self {
-        let args = ["diff", "--from", from, "--to", to];
+        let mut args = vec!["diff", "--from", from, "--to", to];
+        if let Some(file) = file {
+            args.push(file);
+        }
         Self::_new_skip_sync(&args, global_args, Some(term), ReturnOutput::Stderr)
     }
 

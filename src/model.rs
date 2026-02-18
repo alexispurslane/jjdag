@@ -1299,9 +1299,11 @@ impl Model {
                 let Some(from_change_id) = self.get_selected_change_id() else {
                     return self.invalid_selection();
                 };
+                let file = self.get_selected_file_path();
                 JjCommand::diff_from_to_interactive(
                     from_change_id,
                     "@",
+                    file,
                     self.global_args.clone(),
                     term,
                 )
@@ -1313,9 +1315,24 @@ impl Model {
                 let Some(to_change_id) = self.get_selected_change_id() else {
                     return self.invalid_selection();
                 };
+                let file = self.get_selected_file_path();
                 JjCommand::diff_from_to_interactive(
                     from_change_id,
                     to_change_id,
+                    file,
+                    self.global_args.clone(),
+                    term,
+                )
+            }
+            ViewMode::FromTrunkToSelection => {
+                let Some(to_change_id) = self.get_selected_change_id() else {
+                    return self.invalid_selection();
+                };
+                let file = self.get_selected_file_path();
+                JjCommand::diff_from_to_interactive(
+                    "trunk()",
+                    to_change_id,
+                    file,
                     self.global_args.clone(),
                     term,
                 )
@@ -1324,9 +1341,11 @@ impl Model {
                 let Some(to_change_id) = self.get_selected_change_id() else {
                     return self.invalid_selection();
                 };
+                let file = self.get_selected_file_path();
                 JjCommand::diff_from_to_interactive(
                     "@",
                     to_change_id,
+                    file,
                     self.global_args.clone(),
                     term,
                 )

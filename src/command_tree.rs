@@ -1595,6 +1595,14 @@ impl CommandTree {
             ),
             (
                 "View",
+                "From trunk to selection",
+                vec![KeyCode::Char('v'), KeyCode::Char('m')],
+                CommandTreeNode::new_action(Message::View {
+                    mode: ViewMode::FromTrunkToSelection,
+                }),
+            ),
+            (
+                "View",
                 "From @ to selection",
                 vec![KeyCode::Char('v'), KeyCode::Char('t')],
                 CommandTreeNode::new_action(Message::View {

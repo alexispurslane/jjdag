@@ -293,6 +293,7 @@ pub enum ViewMode {
     Default,
     FromSelection,
     FromSelectionToDestination,
+    FromTrunkToSelection,
     ToSelection,
 }
 
