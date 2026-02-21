@@ -725,8 +725,54 @@ impl Model {
                 self.queue_jj_command(cmd)
             }
 
-            crate::update::Popup::GitFetchRemote { .. } => {
-                let cmd = JjCommand::git_fetch(None, Some(&selected), self.global_args.clone());
+            crate::update::Popup::GitFetchRemote {
+                select_for_branches,
+                ..
+            } => {
+                if select_for_branches {
+                    // Fetch bookmarks/branches from this remote and show branch selection popup
+                    let output = JjCommand::bookmark_list_with_args(
+                        &["bookmark", "list", "--remote", &selected],
+                        self.global_args.clone(),
+                    )
+                    .run()?;
+                    let branches: Vec<String> = output
+                        .lines()
+                        .map(|s| s.trim())
+                        .filter(|s| !s.is_empty())
+                        .map(|s| {
+                            let clean = strip_ansi(s);
+                            clean.split(':').next().unwrap_or(&clean).trim().to_string()
+                        })
+                        .filter(|s| !s.is_empty())
+                        .collect();
+
+                    if branches.is_empty() {
+                        self.info_list = Some(
+                            format!("No branches found on remote '{}'", selected).into_text()?,
+                        );
+                        return Ok(());
+                    }
+
+                    let popup = crate::update::Popup::GitFetchRemoteBranches {
+                        remote: selected,
+                        branches,
+                    };
+                    self.open_popup(popup)
+                } else {
+                    // Fetch all from this remote
+                    let cmd =
+                        JjCommand::git_fetch_from_remote(&selected, None, self.global_args.clone());
+                    self.queue_jj_command(cmd)
+                }
+            }
+            crate::update::Popup::GitFetchRemoteBranches { remote, .. } => {
+                // Fetch specific branch from specific remote
+                let cmd = JjCommand::git_fetch_from_remote(
+                    &remote,
+                    Some(&selected),
+                    self.global_args.clone(),
+                );
                 self.queue_jj_command(cmd)
             }
             crate::update::Popup::GitPushBookmark {
@@ -1072,22 +1118,22 @@ impl Model {
                 self.queue_jj_command(cmd)
             }
             GitFetchMode::Branch => {
-                // Listing remote branches before fetching is not supported by jj
-                // User needs to know the branch name beforehand
-                self.info_list = Some(
-                    "Branch fetching: Use 'g f' to fetch all, or specify branch name manually with jj git fetch -b <branch>"
-                        .into_text()?,
-                );
-                Ok(())
-            }
-            GitFetchMode::Remote => {
-                // Fetch remotes and show popup
+                // Show remotes first, then we'll fetch branches from selected remote
                 let output = JjCommand::git_remote_list(self.global_args.clone()).run()?;
                 let remotes: Vec<String> = output
                     .lines()
                     .map(|s| s.trim())
                     .filter(|s| !s.is_empty())
-                    .map(|s| strip_ansi(s).trim().to_string())
+                    .map(|s| {
+                        // jj git remote list outputs "origin git@github.com:..."
+                        // We only want the remote name (first word)
+                        strip_ansi(s)
+                            .split_whitespace()
+                            .next()
+                            .unwrap_or(s)
+                            .trim()
+                            .to_string()
+                    })
                     .filter(|s| !s.is_empty())
                     .collect();
 
@@ -1096,7 +1142,41 @@ impl Model {
                     return Ok(());
                 }
 
-                let popup = crate::update::Popup::GitFetchRemote { remotes };
+                let popup = crate::update::Popup::GitFetchRemote {
+                    remotes,
+                    select_for_branches: true,
+                };
+                self.open_popup(popup)
+            }
+            GitFetchMode::Remote => {
+                // Fetch remotes and show popup
+                let output = JjCommand::git_remote_list(self.global_args.clone()).run()?;
+                let remotes: Vec<String> = output
+                    .lines()
+                    .map(|s| s.trim())
+                    .filter(|s| !s.is_empty())
+                    .map(|s| {
+                        // jj git remote list outputs "origin git@github.com:..."
+                        // We only want the remote name (first word)
+                        strip_ansi(s)
+                            .split_whitespace()
+                            .next()
+                            .unwrap_or(s)
+                            .trim()
+                            .to_string()
+                    })
+                    .filter(|s| !s.is_empty())
+                    .collect();
+
+                if remotes.is_empty() {
+                    self.info_list = Some("No remotes configured".into_text()?);
+                    return Ok(());
+                }
+
+                let popup = crate::update::Popup::GitFetchRemote {
+                    remotes,
+                    select_for_branches: false,
+                };
                 self.open_popup(popup)
             }
         }

@@ -478,6 +478,20 @@ impl JjCommand {
         Self::_new(&args, global_args, None, ReturnOutput::Stderr)
     }
 
+    /// Fetch from a specific remote, optionally filtering by branch
+    pub fn git_fetch_from_remote(
+        remote: &str,
+        branch: Option<&str>,
+        global_args: GlobalArgs,
+    ) -> Self {
+        let mut args = vec!["git", "fetch", "--remote", remote];
+        if let Some(branch) = branch {
+            args.push("-b");
+            args.push(branch);
+        }
+        Self::_new(&args, global_args, None, ReturnOutput::Stderr)
+    }
+
     pub fn bookmark_create(bookmark_names: &str, change_id: &str, global_args: GlobalArgs) -> Self {
         let args = [
             "bookmark",

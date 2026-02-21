@@ -29,6 +29,11 @@ pub enum Popup {
     },
     GitFetchRemote {
         remotes: Vec<String>,
+        select_for_branches: bool,
+    },
+    GitFetchRemoteBranches {
+        remote: String,
+        branches: Vec<String>,
     },
     GitPushBookmark {
         bookmarks: Vec<String>,
@@ -48,6 +53,7 @@ impl Popup {
             Popup::BookmarkUntrack { .. } => "Untrack Remote Bookmark",
             Popup::FileTrack { .. } => "Track File",
             Popup::GitFetchRemote { .. } => "Select Remote",
+            Popup::GitFetchRemoteBranches { .. } => "Select Branch to Fetch",
             Popup::GitPushBookmark { .. } => "Select Bookmark to Push",
         }
     }
@@ -61,7 +67,8 @@ impl Popup {
             Popup::BookmarkTrack { remote_bookmarks } => remote_bookmarks,
             Popup::BookmarkUntrack { tracked_bookmarks } => tracked_bookmarks,
             Popup::FileTrack { untracked_files } => untracked_files,
-            Popup::GitFetchRemote { remotes } => remotes,
+            Popup::GitFetchRemote { remotes, .. } => remotes,
+            Popup::GitFetchRemoteBranches { branches, .. } => branches,
             Popup::GitPushBookmark { bookmarks, .. } => bookmarks,
         }
     }
