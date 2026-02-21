@@ -236,9 +236,9 @@ impl CommandTree {
             ),
             (
                 "Bookmark",
-                "Create at selection",
+                "Create at selection (inline edit)",
                 vec![KeyCode::Char('b'), KeyCode::Char('c')],
-                CommandTreeNode::new_action(Message::BookmarkCreate),
+                CommandTreeNode::new_action(Message::BookmarkEditStart),
             ),
             (
                 "Bookmark",

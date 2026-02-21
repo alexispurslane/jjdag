@@ -3,7 +3,7 @@ use crate::model::Model;
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, List, Paragraph},
 };
@@ -57,10 +57,42 @@ fn render_header(model: &Model) -> Paragraph<'_> {
 
 fn render_log_list(model: &Model) -> List<'static> {
     let mut log_items = model.log_list.clone();
+    inject_virtual_bookmark(model, &mut log_items);
     apply_saved_selection_highlights(model, &mut log_items);
     List::new(log_items)
         .highlight_style(Style::new().bold().bg(SELECTION_COLOR))
         .scroll_padding(model.log_list_scroll_padding)
+}
+
+/// When bookmark editing is active, inject the virtual bookmark into the selected commit's line
+fn inject_virtual_bookmark(model: &Model, log_items: &mut [ratatui::text::Text<'static>]) {
+    let Some(ref editing_change_id) = model.bookmark_edit_change_id else {
+        return;
+    };
+    let Some(selected_idx) = model.log_list_state.selected() else {
+        return;
+    };
+    let Some(text) = log_items.get_mut(selected_idx) else {
+        return;
+    };
+
+    // Find the change_id in the selected line to verify this is the right commit
+    let text_str = text.to_string();
+    if !text_str.contains(&editing_change_id[..8]) {
+        return;
+    }
+
+    // Create a new line with the virtual bookmark injected
+    if let Some(first_line) = text.lines.first_mut() {
+        // Add the virtual bookmark span at the end
+        first_line.spans.push(Span::raw(" "));
+        first_line.spans.push(Span::styled(
+            format!("[{}█]", model.bookmark_edit_name),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
 }
 
 fn apply_saved_selection_highlights(model: &Model, log_items: &mut [ratatui::text::Text<'static>]) {

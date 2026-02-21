@@ -13,7 +13,6 @@ pub enum Message {
     Absorb {
         mode: AbsorbMode,
     },
-    BookmarkCreate,
     BookmarkDelete,
     BookmarkForget {
         include_remotes: bool,
@@ -25,6 +24,18 @@ pub enum Message {
     BookmarkSet,
     BookmarkTrack,
     BookmarkUntrack,
+    /// Start editing a bookmark name inline for the selected commit
+    BookmarkEditStart,
+    /// Add a character to the bookmark name being edited
+    BookmarkEditChar {
+        ch: char,
+    },
+    /// Remove the last character from the bookmark name
+    BookmarkEditBackspace,
+    /// Submit the bookmark creation
+    BookmarkEditSubmit,
+    /// Cancel bookmark editing
+    BookmarkEditCancel,
     Clear,
     Commit,
     Describe,
@@ -326,6 +337,17 @@ fn handle_event(model: &mut Model) -> Result<Option<Message>> {
 }
 
 fn handle_key(model: &mut Model, key: event::KeyEvent) -> Option<Message> {
+    // When in bookmark editing mode, capture text input
+    if model.bookmark_edit_change_id.is_some() {
+        return match key.code {
+            KeyCode::Enter => Some(Message::BookmarkEditSubmit),
+            KeyCode::Esc => Some(Message::BookmarkEditCancel),
+            KeyCode::Backspace => Some(Message::BookmarkEditBackspace),
+            KeyCode::Char(c) => Some(Message::BookmarkEditChar { ch: c }),
+            _ => None,
+        };
+    }
+
     match key.code {
         KeyCode::Char('q') => Some(Message::Quit),
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => Some(Message::Quit),
@@ -399,7 +421,6 @@ fn handle_msg(term: Term, model: &mut Model, msg: Message) -> Result<Option<Mess
         // Commands
         Message::Abandon { mode } => model.jj_abandon(mode)?,
         Message::Absorb { mode } => model.jj_absorb(mode)?,
-        Message::BookmarkCreate => model.jj_bookmark_create(term)?,
         Message::BookmarkDelete => model.jj_bookmark_delete(term)?,
         Message::BookmarkForget { include_remotes } => {
             model.jj_bookmark_forget(include_remotes, term)?
@@ -409,6 +430,12 @@ fn handle_msg(term: Term, model: &mut Model, msg: Message) -> Result<Option<Mess
         Message::BookmarkSet => model.jj_bookmark_set(term)?,
         Message::BookmarkTrack => model.jj_bookmark_track(term)?,
         Message::BookmarkUntrack => model.jj_bookmark_untrack(term)?,
+        // Bookmark editing
+        Message::BookmarkEditStart => model.bookmark_edit_start()?,
+        Message::BookmarkEditChar { ch } => model.bookmark_edit_char(ch),
+        Message::BookmarkEditBackspace => model.bookmark_edit_backspace(),
+        Message::BookmarkEditSubmit => model.bookmark_edit_submit(term)?,
+        Message::BookmarkEditCancel => model.bookmark_edit_cancel(),
         Message::Commit => model.jj_commit(term)?,
         Message::Describe => model.jj_describe(term)?,
         Message::Duplicate {

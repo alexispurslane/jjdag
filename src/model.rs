@@ -56,6 +56,10 @@ pub struct Model {
     pub log_list_layout: Rect,
     pub log_list_scroll_padding: usize,
     pub info_list: Option<Text<'static>>,
+    /// When Some(change_id), we're editing a bookmark name for that commit
+    pub bookmark_edit_change_id: Option<String>,
+    /// The bookmark name being typed (valid when bookmark_edit_change_id is Some)
+    pub bookmark_edit_name: String,
 }
 
 #[derive(Debug)]
@@ -82,6 +86,8 @@ impl Model {
             log_list_layout: Rect::ZERO,
             log_list_scroll_padding: LOG_LIST_SCROLL_PADDING,
             info_list: None,
+            bookmark_edit_change_id: None,
+            bookmark_edit_name: String::new(),
             display_repository: format_repository_for_display(&repository),
             global_args: GlobalArgs {
                 repository,
@@ -560,6 +566,45 @@ impl Model {
         self.queue_jj_command(cmd)
     }
 
+    /// Start inline bookmark editing for the selected commit
+    pub fn bookmark_edit_start(&mut self) -> Result<()> {
+        let Some(change_id) = self.get_selected_change_id() else {
+            return self.invalid_selection();
+        };
+        self.bookmark_edit_change_id = Some(change_id.to_string());
+        self.bookmark_edit_name = String::new();
+        Ok(())
+    }
+
+    /// Add a character to the bookmark name being edited
+    pub fn bookmark_edit_char(&mut self, ch: char) {
+        self.bookmark_edit_name.push(ch);
+    }
+
+    /// Remove the last character from the bookmark name
+    pub fn bookmark_edit_backspace(&mut self) {
+        self.bookmark_edit_name.pop();
+    }
+
+    /// Cancel bookmark editing
+    pub fn bookmark_edit_cancel(&mut self) {
+        self.bookmark_edit_change_id = None;
+        self.bookmark_edit_name.clear();
+    }
+
+    /// Submit the bookmark creation from inline edit
+    pub fn bookmark_edit_submit(&mut self, _term: Term) -> Result<()> {
+        let Some(change_id) = self.bookmark_edit_change_id.clone() else {
+            return Ok(());
+        };
+        let bookmark_name = self.bookmark_edit_name.clone();
+        self.bookmark_edit_cancel(); // Clear editing state first
+
+        let cmd = JjCommand::bookmark_create(&bookmark_name, &change_id, self.global_args.clone());
+        self.queue_jj_command(cmd)
+    }
+
+    /// Original bookmark_create using external editor (for compatibility)
     pub fn jj_bookmark_create(&mut self, term: Term) -> Result<()> {
         let Some(change_id) = self.get_selected_change_id() else {
             return self.invalid_selection();
