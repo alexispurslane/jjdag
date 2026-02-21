@@ -206,8 +206,16 @@ impl JjCommand {
         Self::_new_skip_sync(&args, global_args, Some(term), ReturnOutput::Stderr)
     }
 
-    pub fn describe(change_id: &str, global_args: GlobalArgs, term: Term) -> Self {
-        let args = ["describe", change_id];
+    pub fn describe(
+        change_id: &str,
+        ignore_immutable: bool,
+        global_args: GlobalArgs,
+        term: Term,
+    ) -> Self {
+        let mut args = vec!["describe", change_id];
+        if ignore_immutable {
+            args.push("--ignore-immutable");
+        }
         Self::_new(&args, global_args, Some(term), ReturnOutput::Stderr)
     }
 

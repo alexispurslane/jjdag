@@ -1,9 +1,9 @@
 use crate::update::{
-    AbandonMode, AbsorbMode, BookmarkMoveMode, DuplicateDestination, DuplicateDestinationType,
-    GitFetchMode, GitPushMode, InterdiffMode, Message, MetaeditAction, NewMode, NextPrevDirection,
-    NextPrevMode, ParallelizeSource, RebaseDestination, RebaseDestinationType, RebaseSourceType,
-    RestoreMode, RevertDestination, RevertDestinationType, RevertRevision, SignAction,
-    SimplifyParentsMode, SquashMode, ViewMode,
+    AbandonMode, AbsorbMode, BookmarkMoveMode, DescribeMode, DuplicateDestination,
+    DuplicateDestinationType, GitFetchMode, GitPushMode, InterdiffMode, Message, MetaeditAction,
+    NewMode, NextPrevDirection, NextPrevMode, ParallelizeSource, RebaseDestination,
+    RebaseDestinationType, RebaseSourceType, RestoreMode, RevertDestination, RevertDestinationType,
+    RevertRevision, SignAction, SimplifyParentsMode, SquashMode, ViewMode,
 };
 use crossterm::event::KeyCode;
 use indexmap::IndexMap;
@@ -360,7 +360,17 @@ impl CommandTree {
                 "Describe",
                 "Selection",
                 vec![KeyCode::Char('d'), KeyCode::Char('d')],
-                CommandTreeNode::new_action(Message::Describe),
+                CommandTreeNode::new_action(Message::Describe {
+                    mode: DescribeMode::Default,
+                }),
+            ),
+            (
+                "Describe",
+                "Selection ignoring immutability",
+                vec![KeyCode::Char('d'), KeyCode::Char('i')],
+                CommandTreeNode::new_action(Message::Describe {
+                    mode: DescribeMode::IgnoreImmutable,
+                }),
             ),
             (
                 "Commands",

@@ -121,7 +121,9 @@ pub enum Message {
     PopupPrev,
     Clear,
     Commit,
-    Describe,
+    Describe {
+        mode: DescribeMode,
+    },
     Duplicate {
         destination_type: DuplicateDestinationType,
         destination: DuplicateDestination,
@@ -284,6 +286,12 @@ pub enum MetaeditAction {
     UpdateAuthor,
     UpdateAuthorTimestamp,
     UpdateChangeId,
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum DescribeMode {
+    Default,
+    IgnoreImmutable,
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]
@@ -540,7 +548,7 @@ fn handle_msg(term: Term, model: &mut Model, msg: Message) -> Result<Option<Mess
         Message::PopupSelect => model.popup_select(term)?,
         Message::PopupCancel => model.popup_cancel(),
         Message::Commit => model.jj_commit(term)?,
-        Message::Describe => model.jj_describe(term)?,
+        Message::Describe { mode } => model.jj_describe(mode, term)?,
         Message::Duplicate {
             destination_type,
             destination,

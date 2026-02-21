@@ -6,10 +6,10 @@ use crate::{
     shell_out::{JjCommand, JjCommandError, get_input_from_editor},
     terminal::Term,
     update::{
-        AbandonMode, AbsorbMode, BookmarkMoveMode, DuplicateDestination, DuplicateDestinationType,
-        GitFetchMode, GitPushMode, InterdiffMode, Message, MetaeditAction, NewMode,
-        NextPrevDirection, NextPrevMode, ParallelizeSource, RebaseDestination,
-        RebaseDestinationType, RebaseSourceType, RestoreMode, RevertDestination,
+        AbandonMode, AbsorbMode, BookmarkMoveMode, DescribeMode, DuplicateDestination,
+        DuplicateDestinationType, GitFetchMode, GitPushMode, InterdiffMode, Message,
+        MetaeditAction, NewMode, NextPrevDirection, NextPrevMode, ParallelizeSource,
+        RebaseDestination, RebaseDestinationType, RebaseSourceType, RestoreMode, RevertDestination,
         RevertDestinationType, RevertRevision, SignAction, SimplifyParentsMode, SquashMode,
         ViewMode,
     },
@@ -1004,11 +1004,12 @@ impl Model {
         self.queue_jj_command(cmd)
     }
 
-    pub fn jj_describe(&mut self, term: Term) -> Result<()> {
+    pub fn jj_describe(&mut self, mode: DescribeMode, term: Term) -> Result<()> {
         let Some(change_id) = self.get_selected_change_id() else {
             return self.invalid_selection();
         };
-        let cmd = JjCommand::describe(change_id, self.global_args.clone(), term);
+        let ignore_immutable = mode == DescribeMode::IgnoreImmutable;
+        let cmd = JjCommand::describe(change_id, ignore_immutable, self.global_args.clone(), term);
         self.queue_jj_command(cmd)
     }
 
