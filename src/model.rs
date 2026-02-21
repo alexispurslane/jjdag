@@ -1,6 +1,8 @@
 use crate::{
     command_tree::{CommandTree, display_unbound_error_lines},
-    log_tree::{DIFF_HUNK_LINE_IDX, JjLog, LogTreeNode, TreePosition, get_parent_tree_position},
+    log_tree::{
+        DIFF_HUNK_LINE_IDX, JjLog, LogTreeNode, TreePosition, get_parent_tree_position, strip_ansi,
+    },
     shell_out::{JjCommand, JjCommandError, get_input_from_editor},
     terminal::Term,
     update::{
@@ -60,6 +62,12 @@ pub struct Model {
     pub bookmark_edit_change_id: Option<String>,
     /// The bookmark name being typed (valid when bookmark_edit_change_id is Some)
     pub bookmark_edit_name: String,
+    /// Current fuzzy searchable popup, if any
+    pub current_popup: Option<crate::update::Popup>,
+    /// Filter text for the current popup
+    pub popup_filter: String,
+    /// Selected index in the current popup's filtered list
+    pub popup_selection: usize,
 }
 
 #[derive(Debug)]
@@ -88,6 +96,9 @@ impl Model {
             info_list: None,
             bookmark_edit_change_id: None,
             bookmark_edit_name: String::new(),
+            current_popup: None,
+            popup_filter: String::new(),
+            popup_selection: 0,
             display_repository: format_repository_for_display(&repository),
             global_args: GlobalArgs {
                 repository,
@@ -604,6 +615,146 @@ impl Model {
         self.queue_jj_command(cmd)
     }
 
+    // ===== Popup Methods =====
+
+    /// Open a fuzzy searchable popup
+    pub fn open_popup(&mut self, popup: crate::update::Popup) -> Result<()> {
+        self.current_popup = Some(popup);
+        self.popup_filter = String::new();
+        self.popup_selection = 0;
+        Ok(())
+    }
+
+    /// Add a character to the popup filter
+    pub fn popup_filter_char(&mut self, ch: char) {
+        self.popup_filter.push(ch);
+        self.popup_selection = 0; // Reset selection when filter changes
+    }
+
+    /// Remove last character from popup filter
+    pub fn popup_filter_backspace(&mut self) {
+        self.popup_filter.pop();
+        self.popup_selection = 0; // Reset selection when filter changes
+    }
+
+    /// Move selection to next item in popup
+    pub fn popup_next(&mut self) {
+        if let Some(ref popup) = self.current_popup {
+            let filtered_count = popup
+                .items()
+                .iter()
+                .filter(|item| {
+                    let filter_lower = self.popup_filter.to_lowercase();
+                    let item_lower = item.to_lowercase();
+                    filter_lower.is_empty() || item_lower.contains(&filter_lower)
+                })
+                .count();
+            if self.popup_selection + 1 < filtered_count {
+                self.popup_selection += 1;
+            }
+        }
+    }
+
+    /// Move selection to previous item in popup
+    pub fn popup_prev(&mut self) {
+        if self.popup_selection > 0 {
+            self.popup_selection -= 1;
+        }
+    }
+
+    /// Get the currently selected item from the popup
+    fn get_popup_selection(&self) -> Option<String> {
+        let popup = self.current_popup.as_ref()?;
+        let filter_lower = self.popup_filter.to_lowercase();
+        let filtered: Vec<&String> = popup
+            .items()
+            .iter()
+            .filter(|item| {
+                let item_lower = item.to_lowercase();
+                filter_lower.is_empty() || item_lower.contains(&filter_lower)
+            })
+            .collect();
+        filtered.get(self.popup_selection).map(|s| (*s).clone())
+    }
+
+    /// Confirm popup selection and execute the command
+    pub fn popup_select(&mut self, _term: Term) -> Result<()> {
+        let Some(selected) = self.get_popup_selection() else {
+            self.popup_cancel();
+            return Ok(());
+        };
+
+        // Take ownership of popup to avoid borrow issues
+        let popup = self.current_popup.take().unwrap();
+        self.popup_cancel(); // Clear state
+
+        match popup {
+            crate::update::Popup::BookmarkDelete { .. } => {
+                let cmd = JjCommand::bookmark_delete(&selected, self.global_args.clone());
+                self.queue_jj_command(cmd)
+            }
+            crate::update::Popup::BookmarkForget {
+                include_remotes, ..
+            } => {
+                let cmd = JjCommand::bookmark_forget(
+                    &selected,
+                    include_remotes,
+                    self.global_args.clone(),
+                );
+                self.queue_jj_command(cmd)
+            }
+            crate::update::Popup::BookmarkSet { .. } => {
+                if let Some(change_id) = self.get_selected_change_id() {
+                    let cmd =
+                        JjCommand::bookmark_set(&selected, change_id, self.global_args.clone());
+                    self.queue_jj_command(cmd)
+                } else {
+                    self.invalid_selection()
+                }
+            }
+            crate::update::Popup::BookmarkTrack { .. } => {
+                let cmd = JjCommand::bookmark_track(&selected, self.global_args.clone());
+                self.queue_jj_command(cmd)
+            }
+            crate::update::Popup::BookmarkUntrack { .. } => {
+                let cmd = JjCommand::bookmark_untrack(&selected, self.global_args.clone());
+                self.queue_jj_command(cmd)
+            }
+            crate::update::Popup::FileTrack { .. } => {
+                let cmd = JjCommand::file_track(&selected, self.global_args.clone());
+                self.queue_jj_command(cmd)
+            }
+            crate::update::Popup::GitFetchBranch { remote, .. } => {
+                let cmd =
+                    JjCommand::git_fetch(Some(&remote), Some(&selected), self.global_args.clone());
+                self.queue_jj_command(cmd)
+            }
+            crate::update::Popup::GitFetchRemote { .. } => {
+                let cmd = JjCommand::git_fetch(None, Some(&selected), self.global_args.clone());
+                self.queue_jj_command(cmd)
+            }
+            crate::update::Popup::GitPushBookmark { .. } => {
+                if let Some(_change_id) = self.get_selected_change_id() {
+                    let cmd = JjCommand::git_push(
+                        Some("--bookmark"),
+                        Some(&selected),
+                        self.global_args.clone(),
+                    );
+                    self.queue_jj_command(cmd)
+                } else {
+                    self.invalid_selection()
+                }
+            }
+        }
+    }
+
+    /// Cancel and close the popup
+    pub fn popup_cancel(&mut self) {
+        self.current_popup = None;
+        self.popup_filter = String::new();
+        self.popup_selection = 0;
+    }
+
     /// Original bookmark_create using external editor (for compatibility)
     pub fn jj_bookmark_create(&mut self, term: Term) -> Result<()> {
         let Some(change_id) = self.get_selected_change_id() else {
@@ -618,14 +769,29 @@ impl Model {
         self.queue_jj_command(cmd)
     }
 
-    pub fn jj_bookmark_delete(&mut self, term: Term) -> Result<()> {
-        let Some(bookmark_names) =
-            get_input_from_editor(term, None, Some("Enter the bookmark(s) to delete"))?
-        else {
-            return self.cancelled();
-        };
-        let cmd = JjCommand::bookmark_delete(&bookmark_names, self.global_args.clone());
-        self.queue_jj_command(cmd)
+    pub fn jj_bookmark_delete(&mut self, _term: Term) -> Result<()> {
+        // Fetch bookmarks and open popup
+        let output = JjCommand::bookmark_list(self.global_args.clone()).run()?;
+        let bookmarks: Vec<String> = output
+            .lines()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(|s| {
+                // Strip ANSI color codes from jj output
+                let clean = strip_ansi(s);
+                // Default format: "bookmark-name: commit-id description"
+                // Extract just the bookmark name (before the colon)
+                clean.split(':').next().unwrap_or(&clean).trim().to_string()
+            })
+            .collect();
+
+        if bookmarks.is_empty() {
+            self.info_list = Some("No bookmarks to delete".into_text()?);
+            return Ok(());
+        }
+
+        let popup = crate::update::Popup::BookmarkDelete { bookmarks };
+        self.open_popup(popup)
     }
 
     pub fn jj_bookmark_forget(&mut self, include_remotes: bool, term: Term) -> Result<()> {

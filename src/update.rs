@@ -5,6 +5,72 @@ use std::time::Duration;
 
 const EVENT_POLL_DURATION: Duration = Duration::from_millis(200);
 
+/// A fuzzy searchable popup for selecting from a list of options
+#[derive(Debug, Clone)]
+pub enum Popup {
+    BookmarkDelete {
+        bookmarks: Vec<String>,
+    },
+    BookmarkForget {
+        bookmarks: Vec<String>,
+        include_remotes: bool,
+    },
+    BookmarkSet {
+        bookmarks: Vec<String>,
+    },
+    BookmarkTrack {
+        remote_bookmarks: Vec<String>,
+    },
+    BookmarkUntrack {
+        tracked_bookmarks: Vec<String>,
+    },
+    FileTrack {
+        untracked_files: Vec<String>,
+    },
+    GitFetchBranch {
+        remote: String,
+        branches: Vec<String>,
+    },
+    GitFetchRemote {
+        remotes: Vec<String>,
+    },
+    GitPushBookmark {
+        bookmarks: Vec<String>,
+    },
+}
+
+impl Popup {
+    /// Get the title to display in the popup
+    pub fn title(&self) -> &'static str {
+        match self {
+            Popup::BookmarkDelete { .. } => "Delete Bookmark",
+            Popup::BookmarkForget { .. } => "Forget Bookmark",
+            Popup::BookmarkSet { .. } => "Set Bookmark",
+            Popup::BookmarkTrack { .. } => "Track Remote Bookmark",
+            Popup::BookmarkUntrack { .. } => "Untrack Remote Bookmark",
+            Popup::FileTrack { .. } => "Track File",
+            Popup::GitFetchRemote { .. } => "Select Remote",
+            Popup::GitFetchBranch { .. } => "Select Branch",
+            Popup::GitPushBookmark { .. } => "Select Bookmark to Push",
+        }
+    }
+
+    /// Get the items to display in the popup
+    pub fn items(&self) -> &[String] {
+        match self {
+            Popup::BookmarkDelete { bookmarks } => bookmarks,
+            Popup::BookmarkForget { bookmarks, .. } => bookmarks,
+            Popup::BookmarkSet { bookmarks } => bookmarks,
+            Popup::BookmarkTrack { remote_bookmarks } => remote_bookmarks,
+            Popup::BookmarkUntrack { tracked_bookmarks } => tracked_bookmarks,
+            Popup::FileTrack { untracked_files } => untracked_files,
+            Popup::GitFetchRemote { remotes } => remotes,
+            Popup::GitFetchBranch { branches, .. } => branches,
+            Popup::GitPushBookmark { bookmarks } => bookmarks,
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum Message {
     Abandon {
@@ -36,6 +102,20 @@ pub enum Message {
     BookmarkEditSubmit,
     /// Cancel bookmark editing
     BookmarkEditCancel,
+    /// Add a character to the popup filter
+    PopupFilterChar {
+        ch: char,
+    },
+    /// Remove last character from popup filter
+    PopupFilterBackspace,
+    /// Select the currently highlighted popup item
+    PopupSelect,
+    /// Cancel the popup without selecting
+    PopupCancel,
+    /// Move selection down in popup
+    PopupNext,
+    /// Move selection up in popup
+    PopupPrev,
     Clear,
     Commit,
     Describe,
@@ -337,6 +417,19 @@ fn handle_event(model: &mut Model) -> Result<Option<Message>> {
 }
 
 fn handle_key(model: &mut Model, key: event::KeyEvent) -> Option<Message> {
+    // When popup is active, capture popup navigation keys
+    if model.current_popup.is_some() {
+        return match key.code {
+            KeyCode::Enter => Some(Message::PopupSelect),
+            KeyCode::Esc => Some(Message::PopupCancel),
+            KeyCode::Backspace => Some(Message::PopupFilterBackspace),
+            KeyCode::Down | KeyCode::Char('j') => Some(Message::PopupNext),
+            KeyCode::Up | KeyCode::Char('k') => Some(Message::PopupPrev),
+            KeyCode::Char(c) => Some(Message::PopupFilterChar { ch: c }),
+            _ => None,
+        };
+    }
+
     // When in bookmark editing mode, capture text input
     if model.bookmark_edit_change_id.is_some() {
         return match key.code {
@@ -436,6 +529,13 @@ fn handle_msg(term: Term, model: &mut Model, msg: Message) -> Result<Option<Mess
         Message::BookmarkEditBackspace => model.bookmark_edit_backspace(),
         Message::BookmarkEditSubmit => model.bookmark_edit_submit(term)?,
         Message::BookmarkEditCancel => model.bookmark_edit_cancel(),
+        // Popup messages
+        Message::PopupFilterChar { ch } => model.popup_filter_char(ch),
+        Message::PopupFilterBackspace => model.popup_filter_backspace(),
+        Message::PopupNext => model.popup_next(),
+        Message::PopupPrev => model.popup_prev(),
+        Message::PopupSelect => model.popup_select(term)?,
+        Message::PopupCancel => model.popup_cancel(),
         Message::Commit => model.jj_commit(term)?,
         Message::Describe => model.jj_describe(term)?,
         Message::Duplicate {

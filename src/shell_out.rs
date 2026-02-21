@@ -470,6 +470,12 @@ impl JjCommand {
         Self::_new(&args, global_args, None, ReturnOutput::Stderr)
     }
 
+    pub fn bookmark_list(global_args: GlobalArgs) -> Self {
+        // Fetch bookmarks with no template - we'll parse the default output
+        let args = ["bookmark", "list"];
+        Self::_new(&args, global_args, None, ReturnOutput::Stdout)
+    }
+
     pub fn bookmark_delete(bookmark_names: &str, global_args: GlobalArgs) -> Self {
         let args = ["bookmark", "delete", bookmark_names];
         Self::_new(&args, global_args, None, ReturnOutput::Stderr)

@@ -4,7 +4,7 @@ use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
-    text::{Line, Span},
+    text::{Line, Span, Text},
     widgets::{Block, Borders, List, Paragraph},
 };
 
@@ -20,6 +20,9 @@ pub fn view(model: &mut Model, frame: &mut Frame) {
     model.log_list_layout = layout[1];
     if let Some(info_list) = render_info_list(model) {
         frame.render_widget(info_list, layout[2]);
+    }
+    if let Some(popup) = &model.current_popup {
+        render_popup(model, frame, popup, frame.area());
     }
 }
 
@@ -118,6 +121,107 @@ fn apply_saved_selection_highlight(text: &mut ratatui::text::Text<'static>) {
             span.style = span.style.bg(SAVED_SELECTION_COLOR);
         }
     }
+}
+
+/// Render a centered popup for fuzzy selection
+fn render_popup(model: &Model, frame: &mut Frame, popup: &crate::update::Popup, area: Rect) {
+    use ratatui::widgets::{Clear, Wrap};
+
+    // Calculate popup size
+    let popup_width = (area.width * 2 / 3).min(60).max(40);
+    let popup_height = (area.height * 2 / 3).min(20).max(10);
+    let popup_x = (area.width - popup_width) / 2;
+    let popup_y = (area.height - popup_height) / 2;
+    let popup_area = Rect::new(popup_x, popup_y, popup_width, popup_height);
+
+    // Clear the background behind the popup
+    frame.render_widget(Clear, popup_area);
+
+    // Get items and filter them
+    let items = popup.items();
+    let filtered_items: Vec<&String> = items
+        .iter()
+        .filter(|item| {
+            let filter_lower = model.popup_filter.to_lowercase();
+            let item_lower = item.to_lowercase();
+            filter_lower.is_empty() || item_lower.contains(&filter_lower)
+        })
+        .collect();
+
+    // Build popup content
+    let title = format!(" {} ", popup.title());
+    let filter_line = format!("> {}", model.popup_filter);
+    let help_line = "Enter: select | Esc: cancel | ↑↓: navigate";
+
+    let mut lines = vec![
+        Line::from(vec![Span::styled(
+            title,
+            Style::default().add_modifier(Modifier::BOLD),
+        )]),
+        Line::from(vec![]), // spacer
+        Line::from(vec![
+            Span::raw(filter_line),
+            Span::styled("_", Style::default().fg(Color::Yellow)),
+        ]),
+        Line::from(vec![]), // spacer
+    ];
+
+    // Add filtered items
+    let max_visible_items = popup_height.saturating_sub(5) as usize;
+    let selection = model
+        .popup_selection
+        .min(filtered_items.len().saturating_sub(1));
+
+    // Calculate scroll offset to keep selection visible
+    let scroll_offset = if selection >= max_visible_items {
+        selection - max_visible_items + 1
+    } else {
+        0
+    };
+
+    for (idx, item) in filtered_items
+        .iter()
+        .enumerate()
+        .skip(scroll_offset)
+        .take(max_visible_items)
+    {
+        let is_selected = idx == selection;
+        let style = if is_selected {
+            Style::default()
+                .bg(Color::Blue)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+        };
+        lines.push(Line::from(vec![
+            Span::styled(format!(" {} ", if is_selected { "▸" } else { " " }), style),
+            Span::styled(
+                format!("{:<width$}", item, width = popup_width as usize - 4),
+                style,
+            ),
+        ]));
+    }
+
+    // Fill remaining space
+    for _ in 0..max_visible_items.saturating_sub(filtered_items.len()) {
+        lines.push(Line::from(vec![Span::raw("")]));
+    }
+
+    lines.push(Line::from(vec![])); // spacer
+    lines.push(Line::from(vec![Span::styled(
+        help_line,
+        Style::default().fg(Color::DarkGray),
+    )]));
+
+    let paragraph = Paragraph::new(Text::from(lines))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Blue)),
+        )
+        .wrap(Wrap { trim: true });
+
+    frame.render_widget(paragraph, popup_area);
 }
 
 fn render_info_list(model: &Model) -> Option<List<'static>> {
