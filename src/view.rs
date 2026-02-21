@@ -47,8 +47,31 @@ fn render_header(model: &Model) -> Paragraph<'_> {
         Span::styled(&model.display_repository, Style::default().fg(Color::Green)),
         Span::raw("  "),
         Span::styled("revset: ", Style::default().fg(Color::Blue)),
-        Span::styled(&model.revset, Style::default().fg(Color::Green)),
     ];
+
+    if model.revset_edit_active {
+        // Show inline editing with cursor
+        let cursor_pos = model.text_cursor.min(model.text_input.len());
+        let (before_cursor, after_cursor) = model.text_input.split_at(cursor_pos);
+        let after_char = after_cursor.chars().next().unwrap_or(' ');
+
+        header_spans.push(Span::styled(
+            before_cursor,
+            Style::default().fg(Color::Yellow),
+        ));
+        header_spans.push(Span::styled(
+            after_char.to_string(),
+            Style::default().bg(Color::Blue).fg(Color::White),
+        ));
+        // Get remaining text after the cursor character
+        let after_rest = &after_cursor[after_char.len_utf8().min(after_cursor.len())..];
+        header_spans.push(Span::styled(after_rest, Style::default().fg(Color::Yellow)));
+    } else {
+        header_spans.push(Span::styled(
+            &model.revset,
+            Style::default().fg(Color::Green),
+        ));
+    }
     if model.global_args.ignore_immutable {
         header_spans.push(Span::styled(
             "  --ignore-immutable",
@@ -126,6 +149,17 @@ fn apply_saved_selection_highlight(text: &mut ratatui::text::Text<'static>) {
 /// Render a centered popup for fuzzy selection
 fn render_popup(model: &Model, frame: &mut Frame, popup: &crate::update::Popup, area: Rect) {
     use ratatui::widgets::{Clear, Wrap};
+
+    // Handle TextPrompt popup separately
+    if let crate::update::Popup::TextPrompt {
+        prompt,
+        placeholder,
+        ..
+    } = popup
+    {
+        render_text_prompt_popup(model, frame, prompt, placeholder, area);
+        return;
+    }
 
     // Calculate popup size
     let popup_width = (area.width * 2 / 3).min(60).max(40);
@@ -220,6 +254,79 @@ fn render_popup(model: &Model, frame: &mut Frame, popup: &crate::update::Popup, 
                 .border_style(Style::default().fg(Color::Blue)),
         )
         .wrap(Wrap { trim: true });
+
+    frame.render_widget(paragraph, popup_area);
+}
+
+/// Render a text prompt popup for single-line input
+fn render_text_prompt_popup(
+    model: &Model,
+    frame: &mut Frame,
+    prompt: &str,
+    placeholder: &str,
+    area: Rect,
+) {
+    use ratatui::widgets::Clear;
+
+    // Calculate popup size - fixed height for text prompt
+    let popup_width = (area.width * 2 / 3).min(60).max(40);
+    let popup_height = 7u16; // Fixed height: title + spacer + prompt + input + spacer + help
+    let popup_x = (area.width - popup_width) / 2;
+    let popup_y = (area.height - popup_height) / 2;
+    let popup_area = Rect::new(popup_x, popup_y, popup_width, popup_height);
+
+    // Clear the background behind the popup
+    frame.render_widget(Clear, popup_area);
+
+    // Build text prompt content
+    let title = format!(" {} ", prompt);
+    let help_line = "Enter: confirm | Esc: cancel";
+
+    // Build input line with cursor positioned at text_cursor
+    let mut input_line = vec![Span::raw("> ")];
+
+    if model.text_input.is_empty() {
+        // Show placeholder when empty, with cursor at the start
+        input_line.push(Span::styled(
+            placeholder,
+            Style::default().fg(Color::DarkGray),
+        ));
+        input_line.push(Span::styled("█", Style::default().fg(Color::Yellow)));
+    } else {
+        // Split text at cursor position
+        let cursor_pos = model.text_cursor.min(model.text_input.len());
+        let before = &model.text_input[..cursor_pos];
+        let after = &model.text_input[cursor_pos..];
+
+        if !before.is_empty() {
+            input_line.push(Span::raw(before));
+        }
+        input_line.push(Span::styled("█", Style::default().fg(Color::Yellow)));
+        if !after.is_empty() {
+            input_line.push(Span::raw(after));
+        }
+    }
+
+    let mut lines = vec![
+        Line::from(vec![Span::styled(
+            title,
+            Style::default().add_modifier(Modifier::BOLD),
+        )]),
+        Line::from(vec![]), // spacer
+        Line::from(input_line),
+        Line::from(vec![]), // spacer
+    ];
+
+    lines.push(Line::from(vec![Span::styled(
+        help_line,
+        Style::default().fg(Color::DarkGray),
+    )]));
+
+    let paragraph = Paragraph::new(Text::from(lines)).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Blue)),
+    );
 
     frame.render_widget(paragraph, popup_area);
 }

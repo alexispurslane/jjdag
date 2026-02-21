@@ -11,7 +11,7 @@ use crate::{
         MetaeditAction, NewMode, NextPrevDirection, NextPrevMode, ParallelizeSource,
         RebaseDestination, RebaseDestinationType, RebaseSourceType, RestoreMode, RevertDestination,
         RevertDestinationType, RevertRevision, SignAction, SimplifyParentsMode, SquashMode,
-        ViewMode,
+        TextPromptAction, ViewMode,
     },
 };
 use ansi_to_tui::IntoText;
@@ -68,6 +68,14 @@ pub struct Model {
     pub popup_filter: String,
     /// Selected index in the current popup's filtered list
     pub popup_selection: usize,
+    /// Text input buffer for text prompt popups
+    pub text_input: String,
+    /// Cursor position in text input (byte index)
+    pub text_cursor: usize,
+    /// Whether we're in revset editing mode (inline override)
+    pub revset_edit_active: bool,
+    /// Original revset value to restore on cancel
+    pub revset_original: String,
 }
 
 #[derive(Debug)]
@@ -99,6 +107,10 @@ impl Model {
             current_popup: None,
             popup_filter: String::new(),
             popup_selection: 0,
+            text_input: String::new(),
+            text_cursor: 0,
+            revset_edit_active: false,
+            revset_original: String::new(),
             display_repository: format_repository_for_display(&repository),
             global_args: GlobalArgs {
                 repository,
@@ -367,14 +379,50 @@ impl Model {
         self.info_list = Some(err.to_string().into_text().unwrap());
     }
 
-    pub fn set_revset(&mut self, term: Term) -> Result<()> {
-        let old_revset = self.revset.clone();
-        let Some(new_revset) =
-            get_input_from_editor(term, Some(&self.revset), Some("Enter the new revset"))?
-        else {
-            return self.cancelled();
-        };
+    pub fn set_revset(&mut self, _term: Term) -> Result<()> {
+        // Enter inline revset editing mode
+        self.revset_edit_active = true;
+        self.revset_original = self.revset.clone();
+        self.text_input = self.revset.clone();
+        self.text_cursor = self.text_input.len();
+        Ok(())
+    }
+
+    /// Add character to revset input
+    pub fn revset_edit_char(&mut self, ch: char) {
+        self.text_input.insert(self.text_cursor, ch);
+        self.text_cursor += ch.len_utf8();
+    }
+
+    /// Backspace in revset input
+    pub fn revset_edit_backspace(&mut self) {
+        if self.text_cursor > 0 {
+            let prev_char_len = self.text_input[..self.text_cursor]
+                .chars()
+                .last()
+                .map(|c| c.len_utf8())
+                .unwrap_or(1);
+            self.text_cursor -= prev_char_len;
+            self.text_input.remove(self.text_cursor);
+        }
+    }
+
+    /// Cancel revset editing
+    pub fn revset_edit_cancel(&mut self) {
+        self.revset_edit_active = false;
+        self.text_input.clear();
+        self.text_cursor = 0;
+    }
+
+    /// Submit new revset
+    pub fn revset_edit_submit(&mut self) -> Result<()> {
+        let new_revset = std::mem::take(&mut self.text_input);
+        self.text_cursor = 0;
+        self.revset_edit_active = false;
+
+        let old_revset = std::mem::take(&mut self.revset_original);
         self.revset = new_revset.clone();
+
         match self.sync() {
             Err(err) => {
                 self.display_error_lines(&err);
@@ -703,6 +751,17 @@ impl Model {
                 );
                 self.queue_jj_command(cmd)
             }
+            crate::update::Popup::BookmarkRenameSelect { .. } => {
+                // Open text prompt for new bookmark name
+                let popup = crate::update::Popup::TextPrompt {
+                    prompt: "Enter New Bookmark Name",
+                    placeholder: "new-bookmark-name",
+                    action: crate::update::TextPromptAction::BookmarkRenameSubmit {
+                        old_name: selected,
+                    },
+                };
+                self.open_popup(popup)
+            }
             crate::update::Popup::BookmarkSet { .. } => {
                 if let Some(change_id) = self.get_selected_change_id() {
                     let cmd =
@@ -742,7 +801,17 @@ impl Model {
                         .filter(|s| !s.is_empty())
                         .map(|s| {
                             let clean = strip_ansi(s);
-                            clean.split(':').next().unwrap_or(&clean).trim().to_string()
+                            // Extract bookmark name: split by colon, then by whitespace
+                            // to handle "bookmark-name (deleted): ..."
+                            clean
+                                .split(':')
+                                .next()
+                                .unwrap_or(&clean)
+                                .trim()
+                                .split_whitespace()
+                                .next()
+                                .unwrap_or(&clean)
+                                .to_string()
                         })
                         .filter(|s| !s.is_empty())
                         .collect();
@@ -796,6 +865,10 @@ impl Model {
                     self.queue_jj_command(cmd)
                 }
             }
+            crate::update::Popup::TextPrompt { .. } => {
+                // Text prompts are handled via TextInputSubmit message, not here
+                Ok(())
+            }
         }
     }
 
@@ -804,6 +877,177 @@ impl Model {
         self.current_popup = None;
         self.popup_filter = String::new();
         self.popup_selection = 0;
+    }
+
+    // ===== Text Input Methods =====
+
+    /// Insert a character at the current cursor position
+    pub fn text_input_char(&mut self, ch: char) {
+        if self.text_cursor > self.text_input.len() {
+            self.text_cursor = self.text_input.len();
+        }
+        self.text_input.insert(self.text_cursor, ch);
+        self.text_cursor += ch.len_utf8();
+    }
+
+    /// Delete character before cursor (backspace)
+    pub fn text_input_backspace(&mut self) {
+        if self.text_cursor > 0 {
+            let char_len = self.text_input[..self.text_cursor]
+                .chars()
+                .last()
+                .map(|c| c.len_utf8())
+                .unwrap_or(1);
+            self.text_cursor -= char_len;
+            self.text_input.remove(self.text_cursor);
+        }
+    }
+
+    /// Delete character at cursor
+    pub fn text_input_delete(&mut self) {
+        if self.text_cursor < self.text_input.len() {
+            self.text_input.remove(self.text_cursor);
+        }
+    }
+
+    /// Move cursor left
+    pub fn text_input_move_left(&mut self) {
+        if self.text_cursor > 0 {
+            let char_len = self.text_input[..self.text_cursor]
+                .chars()
+                .last()
+                .map(|c| c.len_utf8())
+                .unwrap_or(1);
+            self.text_cursor -= char_len;
+        }
+    }
+
+    /// Move cursor right
+    pub fn text_input_move_right(&mut self) {
+        if self.text_cursor < self.text_input.len() {
+            let char_len = self.text_input[self.text_cursor..]
+                .chars()
+                .next()
+                .map(|c| c.len_utf8())
+                .unwrap_or(1);
+            self.text_cursor += char_len;
+        }
+    }
+
+    /// Move cursor to beginning
+    pub fn text_input_move_home(&mut self) {
+        self.text_cursor = 0;
+    }
+
+    /// Move cursor to end
+    pub fn text_input_move_end(&mut self) {
+        self.text_cursor = self.text_input.len();
+    }
+
+    /// Cancel text input and close popup
+    pub fn text_input_cancel(&mut self) {
+        self.current_popup = None;
+        self.text_input.clear();
+        self.text_cursor = 0;
+    }
+
+    /// Submit text input and execute the associated action
+    pub fn text_input_submit(&mut self, term: Term) -> Result<()> {
+        let Some(popup) = self.current_popup.take() else {
+            return Ok(());
+        };
+        let crate::update::Popup::TextPrompt { action, .. } = popup else {
+            self.text_input.clear();
+            self.text_cursor = 0;
+            return Ok(());
+        };
+
+        let text = std::mem::take(&mut self.text_input);
+        self.text_cursor = 0;
+
+        match action {
+            TextPromptAction::SetRevset => self.set_revset_with_text(term, text),
+            TextPromptAction::BookmarkRenameSelect => self.bookmark_rename_select(term, text),
+            TextPromptAction::BookmarkRenameSubmit { old_name } => {
+                self.bookmark_rename_submit(old_name, text)
+            }
+            TextPromptAction::MetaeditSetAuthor { change_id } => {
+                self.metaedit_set_author(change_id, text)
+            }
+            TextPromptAction::MetaeditSetTimestamp { change_id } => {
+                self.metaedit_set_timestamp(change_id, text)
+            }
+            TextPromptAction::ParallelizeRevset => self.parallelize_with_revset(text),
+            TextPromptAction::NextPrev { direction, mode } => {
+                self.next_prev_with_offset(direction, mode, text)
+            }
+        }
+    }
+
+    // Placeholder methods for text prompt actions - to be implemented in Phase 4
+    fn set_revset_with_text(&mut self, _term: Term, _text: String) -> Result<()> {
+        todo!("set_revset_with_text")
+    }
+
+    fn bookmark_rename_select(&mut self, _term: Term, _text: String) -> Result<()> {
+        todo!("bookmark_rename_select")
+    }
+
+    fn bookmark_rename_submit(&mut self, old_name: String, new_name: String) -> Result<()> {
+        let cmd = JjCommand::bookmark_rename(&old_name, &new_name, self.global_args.clone());
+        self.queue_jj_command(cmd)
+    }
+
+    fn metaedit_set_author(&mut self, change_id: String, author: String) -> Result<()> {
+        let cmd = JjCommand::metaedit(
+            &change_id,
+            "--author",
+            Some(&author),
+            self.global_args.clone(),
+        );
+        self.queue_jj_command(cmd)
+    }
+
+    fn metaedit_set_timestamp(&mut self, change_id: String, timestamp: String) -> Result<()> {
+        let cmd = JjCommand::metaedit(
+            &change_id,
+            "--author-timestamp",
+            Some(&timestamp),
+            self.global_args.clone(),
+        );
+        self.queue_jj_command(cmd)
+    }
+
+    fn parallelize_with_revset(&mut self, revset: String) -> Result<()> {
+        let cmd = JjCommand::parallelize(&revset, self.global_args.clone());
+        self.queue_jj_command(cmd)
+    }
+
+    fn next_prev_with_offset(
+        &mut self,
+        direction: NextPrevDirection,
+        mode: NextPrevMode,
+        offset: String,
+    ) -> Result<()> {
+        let mode_flag = match mode {
+            NextPrevMode::Conflict => Some("--conflict"),
+            NextPrevMode::Default => None,
+            NextPrevMode::Edit => Some("--edit"),
+            NextPrevMode::NoEdit => Some("--no-edit"),
+        };
+
+        let direction = match direction {
+            NextPrevDirection::Next => "next",
+            NextPrevDirection::Prev => "prev",
+        };
+
+        let cmd = JjCommand::next_prev(
+            direction,
+            mode_flag,
+            Some(&offset),
+            self.global_args.clone(),
+        );
+        self.queue_jj_command(cmd)
     }
 
     pub fn jj_bookmark_delete(&mut self, _term: Term) -> Result<()> {
@@ -816,9 +1060,17 @@ impl Model {
             .map(|s| {
                 // Strip ANSI color codes from jj output
                 let clean = strip_ansi(s);
-                // Default format: "bookmark-name: commit-id description"
-                // Extract just the bookmark name (before the colon)
-                clean.split(':').next().unwrap_or(&clean).trim().to_string()
+                // Default format: "bookmark-name: commit-id description" or "bookmark-name (deleted): ..."
+                // Extract just the bookmark name (before colon, then before whitespace)
+                clean
+                    .split(':')
+                    .next()
+                    .unwrap_or(&clean)
+                    .trim()
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or(&clean)
+                    .to_string()
             })
             .collect();
 
@@ -844,7 +1096,15 @@ impl Model {
             .filter(|s| !s.is_empty())
             .map(|s| {
                 let clean = strip_ansi(s);
-                clean.split(':').next().unwrap_or(&clean).trim().to_string()
+                clean
+                    .split(':')
+                    .next()
+                    .unwrap_or(&clean)
+                    .trim()
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or(&clean)
+                    .to_string()
             })
             .collect();
 
@@ -901,23 +1161,33 @@ impl Model {
         self.queue_jj_command(cmd)
     }
 
-    pub fn jj_bookmark_rename(&mut self, term: Term) -> Result<()> {
-        let Some(old_bookmark_name) =
-            get_input_from_editor(term.clone(), None, Some("Enter the bookmark to rename"))?
-        else {
-            return self.cancelled();
-        };
-        let Some(new_bookmark_name) =
-            get_input_from_editor(term, None, Some("Enter the bookmark to rename to"))?
-        else {
-            return self.cancelled();
-        };
-        let cmd = JjCommand::bookmark_rename(
-            &old_bookmark_name,
-            &new_bookmark_name,
-            self.global_args.clone(),
-        );
-        self.queue_jj_command(cmd)
+    pub fn jj_bookmark_rename(&mut self, _term: Term) -> Result<()> {
+        // Fetch bookmarks and open popup for selection
+        let output = JjCommand::bookmark_list(self.global_args.clone()).run()?;
+        let bookmarks: Vec<String> = output
+            .lines()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(|s| {
+                let clean = strip_ansi(s);
+                clean
+                    .split(':')
+                    .next()
+                    .unwrap_or(&clean)
+                    .trim()
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or(&clean)
+                    .to_string()
+            })
+            .collect();
+
+        if bookmarks.is_empty() {
+            return Ok(());
+        }
+
+        let popup = crate::update::Popup::BookmarkRenameSelect { bookmarks };
+        self.open_popup(popup)
     }
 
     pub fn jj_bookmark_set(&mut self, _term: Term) -> Result<()> {
@@ -932,7 +1202,15 @@ impl Model {
             .filter(|s| !s.is_empty())
             .map(|s| {
                 let clean = strip_ansi(s);
-                clean.split(':').next().unwrap_or(&clean).trim().to_string()
+                clean
+                    .split(':')
+                    .next()
+                    .unwrap_or(&clean)
+                    .trim()
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or(&clean)
+                    .to_string()
             })
             .collect();
 
@@ -958,7 +1236,15 @@ impl Model {
             .filter(|s| !s.is_empty())
             .map(|s| {
                 let clean = strip_ansi(s);
-                clean.split(':').next().unwrap_or(&clean).trim().to_string()
+                clean
+                    .split(':')
+                    .next()
+                    .unwrap_or(&clean)
+                    .trim()
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or(&clean)
+                    .to_string()
             })
             .collect();
 
@@ -984,7 +1270,15 @@ impl Model {
             .filter(|s| !s.is_empty())
             .map(|s| {
                 let clean = strip_ansi(s);
-                clean.split(':').next().unwrap_or(&clean).trim().to_string()
+                clean
+                    .split(':')
+                    .next()
+                    .unwrap_or(&clean)
+                    .trim()
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or(&clean)
+                    .to_string()
             })
             .filter(|s| s.contains('@'))
             .collect();
@@ -1213,7 +1507,15 @@ impl Model {
                     .filter(|s| !s.is_empty())
                     .map(|s| {
                         let clean = strip_ansi(s);
-                        clean.split(':').next().unwrap_or(&clean).trim().to_string()
+                        clean
+                            .split(':')
+                            .next()
+                            .unwrap_or(&clean)
+                            .trim()
+                            .split_whitespace()
+                            .next()
+                            .unwrap_or(&clean)
+                            .to_string()
                     })
                     .collect();
 
@@ -1238,7 +1540,15 @@ impl Model {
                     .filter(|s| !s.is_empty())
                     .map(|s| {
                         let clean = strip_ansi(s);
-                        clean.split(':').next().unwrap_or(&clean).trim().to_string()
+                        clean
+                            .split(':')
+                            .next()
+                            .unwrap_or(&clean)
+                            .trim()
+                            .split_whitespace()
+                            .next()
+                            .unwrap_or(&clean)
+                            .to_string()
                     })
                     .collect();
 
@@ -1288,42 +1598,69 @@ impl Model {
         self.queue_jj_command(cmd)
     }
 
-    pub fn jj_metaedit(&mut self, action: MetaeditAction, term: Term) -> Result<()> {
+    pub fn jj_metaedit(&mut self, action: MetaeditAction, _term: Term) -> Result<()> {
         let Some(change_id) = self.get_selected_change_id() else {
             return self.invalid_selection();
         };
 
-        let (flag, value) = match action {
-            MetaeditAction::UpdateChangeId => ("--update-change-id", None),
-            MetaeditAction::UpdateAuthorTimestamp => ("--update-author-timestamp", None),
-            MetaeditAction::UpdateAuthor => ("--update-author", None),
-            MetaeditAction::ForceRewrite => ("--force-rewrite", None),
-            MetaeditAction::SetAuthor => {
-                let Some(author) = get_input_from_editor(
-                    term,
+        match action {
+            MetaeditAction::UpdateChangeId => {
+                let cmd = JjCommand::metaedit(
+                    change_id,
+                    "--update-change-id",
                     None,
-                    Some("Enter the author (e.g. 'Name <email@example.com>')"),
-                )?
-                else {
-                    return self.cancelled();
+                    self.global_args.clone(),
+                );
+                self.queue_jj_command(cmd)
+            }
+            MetaeditAction::UpdateAuthorTimestamp => {
+                let cmd = JjCommand::metaedit(
+                    change_id,
+                    "--update-author-timestamp",
+                    None,
+                    self.global_args.clone(),
+                );
+                self.queue_jj_command(cmd)
+            }
+            MetaeditAction::UpdateAuthor => {
+                let cmd = JjCommand::metaedit(
+                    change_id,
+                    "--update-author",
+                    None,
+                    self.global_args.clone(),
+                );
+                self.queue_jj_command(cmd)
+            }
+            MetaeditAction::ForceRewrite => {
+                let cmd = JjCommand::metaedit(
+                    change_id,
+                    "--force-rewrite",
+                    None,
+                    self.global_args.clone(),
+                );
+                self.queue_jj_command(cmd)
+            }
+            MetaeditAction::SetAuthor => {
+                let popup = crate::update::Popup::TextPrompt {
+                    prompt: "Set Author",
+                    placeholder: "Name <email@example.com>",
+                    action: crate::update::TextPromptAction::MetaeditSetAuthor {
+                        change_id: change_id.to_string(),
+                    },
                 };
-                ("--author", Some(author))
+                self.open_popup(popup)
             }
             MetaeditAction::SetAuthorTimestamp => {
-                let Some(timestamp) = get_input_from_editor(
-                    term,
-                    None,
-                    Some("Enter the author timestamp (e.g. '2000-01-23T01:23:45-08:00')"),
-                )?
-                else {
-                    return self.cancelled();
+                let popup = crate::update::Popup::TextPrompt {
+                    prompt: "Set Author Timestamp",
+                    placeholder: "2000-01-23T01:23:45-08:00",
+                    action: crate::update::TextPromptAction::MetaeditSetTimestamp {
+                        change_id: change_id.to_string(),
+                    },
                 };
-                ("--author-timestamp", Some(timestamp))
+                self.open_popup(popup)
             }
-        };
-
-        let cmd = JjCommand::metaedit(change_id, flag, value.as_deref(), self.global_args.clone());
-        self.queue_jj_command(cmd)
+        }
     }
 
     pub fn jj_new(&mut self, mode: NewMode) -> Result<()> {
@@ -1366,36 +1703,34 @@ impl Model {
         direction: NextPrevDirection,
         mode: NextPrevMode,
         offset: bool,
-        term: Term,
+        _term: Term,
     ) -> Result<()> {
-        let mode = match mode {
-            NextPrevMode::Conflict => Some("--conflict"),
-            NextPrevMode::Default => None,
-            NextPrevMode::Edit => Some("--edit"),
-            NextPrevMode::NoEdit => Some("--no-edit"),
-        };
-
-        let offset = if offset {
-            let Some(offset) = get_input_from_editor(term, None, Some("Enter the offset"))? else {
-                self.cancelled()?;
-                return Ok(());
+        if offset {
+            let popup = crate::update::Popup::TextPrompt {
+                prompt: "Enter Offset",
+                placeholder: "positive integer",
+                action: crate::update::TextPromptAction::NextPrev { direction, mode },
             };
-            Some(offset)
+            self.open_popup(popup)
         } else {
-            None
-        };
+            let mode_flag = match mode {
+                NextPrevMode::Conflict => Some("--conflict"),
+                NextPrevMode::Default => None,
+                NextPrevMode::Edit => Some("--edit"),
+                NextPrevMode::NoEdit => Some("--no-edit"),
+            };
 
-        let direction = match direction {
-            NextPrevDirection::Next => "next",
-            NextPrevDirection::Prev => "prev",
-        };
-        let cmd =
-            JjCommand::next_prev(direction, mode, offset.as_deref(), self.global_args.clone());
-        self.queue_jj_command(cmd)
+            let direction = match direction {
+                NextPrevDirection::Next => "next",
+                NextPrevDirection::Prev => "prev",
+            };
+            let cmd = JjCommand::next_prev(direction, mode_flag, None, self.global_args.clone());
+            self.queue_jj_command(cmd)
+        }
     }
 
-    pub fn jj_parallelize(&mut self, source: ParallelizeSource, term: Term) -> Result<()> {
-        let revset = match source {
+    pub fn jj_parallelize(&mut self, source: ParallelizeSource, _term: Term) -> Result<()> {
+        match source {
             ParallelizeSource::Range => {
                 let Some(from_change_id) = self.get_saved_change_id() else {
                     return self.invalid_selection();
@@ -1403,25 +1738,27 @@ impl Model {
                 let Some(to_change_id) = self.get_selected_change_id() else {
                     return self.invalid_selection();
                 };
-                format!("{}::{}", from_change_id, to_change_id)
+                let revset = format!("{}::{}", from_change_id, to_change_id);
+                let cmd = JjCommand::parallelize(&revset, self.global_args.clone());
+                self.queue_jj_command(cmd)
             }
             ParallelizeSource::Revset => {
-                let Some(revset) =
-                    get_input_from_editor(term, None, Some("Enter the revset to parallelize"))?
-                else {
-                    return self.cancelled();
+                let popup = crate::update::Popup::TextPrompt {
+                    prompt: "Parallelize Revset",
+                    placeholder: "Enter revset expression",
+                    action: crate::update::TextPromptAction::ParallelizeRevset,
                 };
-                revset
+                self.open_popup(popup)
             }
             ParallelizeSource::Selection => {
                 let Some(change_id) = self.get_selected_change_id() else {
                     return self.invalid_selection();
                 };
-                format!("{}-::{}", change_id, change_id)
+                let revset = format!("{}-::{}", change_id, change_id);
+                let cmd = JjCommand::parallelize(&revset, self.global_args.clone());
+                self.queue_jj_command(cmd)
             }
-        };
-        let cmd = JjCommand::parallelize(&revset, self.global_args.clone());
-        self.queue_jj_command(cmd)
+        }
     }
 
     pub fn jj_rebase(

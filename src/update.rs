@@ -15,6 +15,9 @@ pub enum Popup {
         bookmarks: Vec<String>,
         include_remotes: bool,
     },
+    BookmarkRenameSelect {
+        bookmarks: Vec<String>,
+    },
     BookmarkSet {
         bookmarks: Vec<String>,
     },
@@ -40,6 +43,33 @@ pub enum Popup {
         change_id: String,
         is_named_mode: bool,
     },
+    /// Text input prompt for single-line text entry
+    TextPrompt {
+        prompt: &'static str,
+        placeholder: &'static str,
+        action: TextPromptAction,
+    },
+}
+
+/// Action to take when text prompt is submitted
+#[derive(Debug, Clone)]
+pub enum TextPromptAction {
+    SetRevset,
+    BookmarkRenameSelect,
+    BookmarkRenameSubmit {
+        old_name: String,
+    },
+    MetaeditSetAuthor {
+        change_id: String,
+    },
+    MetaeditSetTimestamp {
+        change_id: String,
+    },
+    ParallelizeRevset,
+    NextPrev {
+        direction: NextPrevDirection,
+        mode: NextPrevMode,
+    },
 }
 
 impl Popup {
@@ -48,6 +78,7 @@ impl Popup {
         match self {
             Popup::BookmarkDelete { .. } => "Delete Bookmark",
             Popup::BookmarkForget { .. } => "Forget Bookmark",
+            Popup::BookmarkRenameSelect { .. } => "Select Bookmark to Rename",
             Popup::BookmarkSet { .. } => "Set Bookmark",
             Popup::BookmarkTrack { .. } => "Track Remote Bookmark",
             Popup::BookmarkUntrack { .. } => "Untrack Remote Bookmark",
@@ -55,6 +86,7 @@ impl Popup {
             Popup::GitFetchRemote { .. } => "Select Remote",
             Popup::GitFetchRemoteBranches { .. } => "Select Branch to Fetch",
             Popup::GitPushBookmark { .. } => "Select Bookmark to Push",
+            Popup::TextPrompt { prompt, .. } => prompt,
         }
     }
 
@@ -63,6 +95,7 @@ impl Popup {
         match self {
             Popup::BookmarkDelete { bookmarks } => bookmarks,
             Popup::BookmarkForget { bookmarks, .. } => bookmarks,
+            Popup::BookmarkRenameSelect { bookmarks } => bookmarks,
             Popup::BookmarkSet { bookmarks } => bookmarks,
             Popup::BookmarkTrack { remote_bookmarks } => remote_bookmarks,
             Popup::BookmarkUntrack { tracked_bookmarks } => tracked_bookmarks,
@@ -70,6 +103,7 @@ impl Popup {
             Popup::GitFetchRemote { remotes, .. } => remotes,
             Popup::GitFetchRemoteBranches { branches, .. } => branches,
             Popup::GitPushBookmark { bookmarks, .. } => bookmarks,
+            Popup::TextPrompt { .. } => &[],
         }
     }
 }
@@ -119,6 +153,26 @@ pub enum Message {
     PopupNext,
     /// Move selection up in popup
     PopupPrev,
+    /// Add a character to the text input at cursor position
+    TextInputChar {
+        ch: char,
+    },
+    /// Delete character before cursor in text input
+    TextInputBackspace,
+    /// Delete character at cursor in text input
+    TextInputDelete,
+    /// Move cursor left in text input
+    TextInputMoveLeft,
+    /// Move cursor right in text input
+    TextInputMoveRight,
+    /// Move cursor to start of text input
+    TextInputMoveHome,
+    /// Move cursor to end of text input
+    TextInputMoveEnd,
+    /// Submit the text input
+    TextInputSubmit,
+    /// Cancel the text input
+    TextInputCancel,
     Clear,
     Commit,
     Describe {
@@ -196,6 +250,24 @@ pub enum Message {
     SelectPrevNode,
     SelectPrevSiblingNode,
     SetRevset,
+    /// Submit the revset edit
+    SetRevsetSubmit,
+    /// Cancel the revset edit
+    SetRevsetCancel,
+    /// Backspace in revset edit
+    SetRevsetBackspace,
+    /// Move cursor left in revset edit
+    SetRevsetMoveLeft,
+    /// Move cursor right in revset edit
+    SetRevsetMoveRight,
+    /// Move cursor to start in revset edit
+    SetRevsetMoveHome,
+    /// Move cursor to end in revset edit
+    SetRevsetMoveEnd,
+    /// Add character to revset edit
+    SetRevsetChar {
+        ch: char,
+    },
     ShowHelp,
     Sign {
         action: SignAction,
@@ -428,8 +500,36 @@ fn handle_event(model: &mut Model) -> Result<Option<Message>> {
 }
 
 fn handle_key(model: &mut Model, key: event::KeyEvent) -> Option<Message> {
-    // When popup is active, capture popup navigation keys
-    if model.current_popup.is_some() {
+    // When popup is active, handle based on popup type
+    if let Some(ref popup) = model.current_popup {
+        // Text prompt popups handle text input
+        if matches!(popup, crate::update::Popup::TextPrompt { .. }) {
+            return match key.code {
+                KeyCode::Enter => Some(Message::TextInputSubmit),
+                KeyCode::Esc => Some(Message::TextInputCancel),
+                KeyCode::Backspace => Some(Message::TextInputBackspace),
+                KeyCode::Delete => Some(Message::TextInputDelete),
+                KeyCode::Left => Some(Message::TextInputMoveLeft),
+                KeyCode::Right => Some(Message::TextInputMoveRight),
+                KeyCode::Home => Some(Message::TextInputMoveHome),
+                KeyCode::End => Some(Message::TextInputMoveEnd),
+                KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    Some(Message::TextInputMoveHome)
+                }
+                KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    Some(Message::TextInputMoveEnd)
+                }
+                KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    Some(Message::TextInputDelete)
+                }
+                KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    Some(Message::TextInputBackspace)
+                }
+                KeyCode::Char(c) => Some(Message::TextInputChar { ch: c }),
+                _ => None,
+            };
+        }
+        // List-based popups handle filter navigation
         return match key.code {
             KeyCode::Enter => Some(Message::PopupSelect),
             KeyCode::Esc => Some(Message::PopupCancel),
@@ -437,6 +537,27 @@ fn handle_key(model: &mut Model, key: event::KeyEvent) -> Option<Message> {
             KeyCode::Down | KeyCode::Char('j') => Some(Message::PopupNext),
             KeyCode::Up | KeyCode::Char('k') => Some(Message::PopupPrev),
             KeyCode::Char(c) => Some(Message::PopupFilterChar { ch: c }),
+            _ => None,
+        };
+    }
+
+    // When in revset editing mode, capture text input
+    if model.revset_edit_active {
+        return match key.code {
+            KeyCode::Enter => Some(Message::SetRevsetSubmit),
+            KeyCode::Esc => Some(Message::SetRevsetCancel),
+            KeyCode::Backspace => Some(Message::SetRevsetBackspace),
+            KeyCode::Left => Some(Message::SetRevsetMoveLeft),
+            KeyCode::Right => Some(Message::SetRevsetMoveRight),
+            KeyCode::Home => Some(Message::SetRevsetMoveHome),
+            KeyCode::End => Some(Message::SetRevsetMoveEnd),
+            KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                Some(Message::SetRevsetMoveHome)
+            }
+            KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                Some(Message::SetRevsetMoveEnd)
+            }
+            KeyCode::Char(c) => Some(Message::SetRevsetChar { ch: c }),
             _ => None,
         };
     }
@@ -499,6 +620,14 @@ fn handle_msg(term: Term, model: &mut Model, msg: Message) -> Result<Option<Mess
         Message::Quit => model.quit(),
         Message::Refresh => model.refresh()?,
         Message::SetRevset => model.set_revset(term)?,
+        Message::SetRevsetSubmit => model.revset_edit_submit()?,
+        Message::SetRevsetCancel => model.revset_edit_cancel(),
+        Message::SetRevsetChar { ch } => model.revset_edit_char(ch),
+        Message::SetRevsetBackspace => model.revset_edit_backspace(),
+        Message::SetRevsetMoveLeft => model.text_input_move_left(),
+        Message::SetRevsetMoveRight => model.text_input_move_right(),
+        Message::SetRevsetMoveHome => model.text_input_move_home(),
+        Message::SetRevsetMoveEnd => model.text_input_move_end(),
         Message::ShowHelp => model.show_help(),
         Message::ToggleIgnoreImmutable => model.toggle_ignore_immutable(),
 
@@ -547,6 +676,16 @@ fn handle_msg(term: Term, model: &mut Model, msg: Message) -> Result<Option<Mess
         Message::PopupPrev => model.popup_prev(),
         Message::PopupSelect => model.popup_select(term)?,
         Message::PopupCancel => model.popup_cancel(),
+        // Text input messages
+        Message::TextInputChar { ch } => model.text_input_char(ch),
+        Message::TextInputBackspace => model.text_input_backspace(),
+        Message::TextInputDelete => model.text_input_delete(),
+        Message::TextInputMoveLeft => model.text_input_move_left(),
+        Message::TextInputMoveRight => model.text_input_move_right(),
+        Message::TextInputMoveHome => model.text_input_move_home(),
+        Message::TextInputMoveEnd => model.text_input_move_end(),
+        Message::TextInputSubmit => model.text_input_submit(term)?,
+        Message::TextInputCancel => model.text_input_cancel(),
         Message::Commit => model.jj_commit(term)?,
         Message::Describe { mode } => model.jj_describe(mode, term)?,
         Message::Duplicate {
