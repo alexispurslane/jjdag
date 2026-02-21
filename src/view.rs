@@ -11,6 +11,35 @@ use ratatui::{
 pub const SELECTION_COLOR: Color = Color::Rgb(40, 42, 54);
 pub const SAVED_SELECTION_COLOR: Color = Color::Rgb(33, 35, 45);
 
+/// Standard style for normal text in input fields
+pub const INPUT_STYLE: Style = Style::new().fg(Color::Yellow);
+/// Standard style for the cursor character (blue background)
+pub const CURSOR_STYLE: Style = Style::new().bg(Color::Blue).fg(Color::White);
+
+/// Render text with an overlay cursor at the given position.
+/// Returns spans: [before_cursor, cursor_char_with_bg, after_cursor]
+pub fn render_text_with_cursor(
+    text: &str,
+    cursor_pos: usize,
+    normal_style: Style,
+    cursor_style: Style,
+) -> Vec<Span<'static>> {
+    let cursor_pos = cursor_pos.min(text.len());
+    let (before, after) = text.split_at(cursor_pos);
+    let after_char = after.chars().next().unwrap_or(' ');
+    let after_rest = &after[after_char.len_utf8().min(after.len())..];
+
+    let mut spans = Vec::with_capacity(3);
+    if !before.is_empty() {
+        spans.push(Span::styled(before.to_string(), normal_style));
+    }
+    spans.push(Span::styled(after_char.to_string(), cursor_style));
+    if !after_rest.is_empty() {
+        spans.push(Span::styled(after_rest.to_string(), normal_style));
+    }
+    spans
+}
+
 pub fn view(model: &mut Model, frame: &mut Frame) {
     let header = render_header(model);
     let log_list = render_log_list(model);
@@ -21,8 +50,13 @@ pub fn view(model: &mut Model, frame: &mut Frame) {
     if let Some(info_list) = render_info_list(model) {
         frame.render_widget(info_list, layout[2]);
     }
-    if let Some(popup) = &model.current_popup {
-        render_popup(model, frame, popup, frame.area());
+    if model.current_popup.is_some()
+        || matches!(
+            model.text_input_location,
+            crate::update::TextInputLocation::Popup { .. }
+        )
+    {
+        render_popup(model, frame, model.current_popup.as_ref(), frame.area());
     }
 }
 
@@ -49,23 +83,18 @@ fn render_header(model: &Model) -> Paragraph<'_> {
         Span::styled("revset: ", Style::default().fg(Color::Blue)),
     ];
 
-    if model.revset_edit_active {
+    if matches!(
+        model.text_input_location,
+        crate::update::TextInputLocation::Revset { .. }
+    ) {
         // Show inline editing with cursor
-        let cursor_pos = model.text_cursor.min(model.text_input.len());
-        let (before_cursor, after_cursor) = model.text_input.split_at(cursor_pos);
-        let after_char = after_cursor.chars().next().unwrap_or(' ');
-
-        header_spans.push(Span::styled(
-            before_cursor,
-            Style::default().fg(Color::Yellow),
-        ));
-        header_spans.push(Span::styled(
-            after_char.to_string(),
-            Style::default().bg(Color::Blue).fg(Color::White),
-        ));
-        // Get remaining text after the cursor character
-        let after_rest = &after_cursor[after_char.len_utf8().min(after_cursor.len())..];
-        header_spans.push(Span::styled(after_rest, Style::default().fg(Color::Yellow)));
+        let cursor_spans = render_text_with_cursor(
+            &model.text_input,
+            model.text_cursor,
+            INPUT_STYLE,
+            CURSOR_STYLE,
+        );
+        header_spans.extend(cursor_spans);
     } else {
         header_spans.push(Span::styled(
             &model.revset,
@@ -84,6 +113,7 @@ fn render_header(model: &Model) -> Paragraph<'_> {
 fn render_log_list(model: &Model) -> List<'static> {
     let mut log_items = model.log_list.clone();
     inject_virtual_bookmark(model, &mut log_items);
+    inject_virtual_description(model, &mut log_items);
     apply_saved_selection_highlights(model, &mut log_items);
     List::new(log_items)
         .highlight_style(Style::new().bold().bg(SELECTION_COLOR))
@@ -92,8 +122,9 @@ fn render_log_list(model: &Model) -> List<'static> {
 
 /// When bookmark editing is active, inject the virtual bookmark into the selected commit's line
 fn inject_virtual_bookmark(model: &Model, log_items: &mut [ratatui::text::Text<'static>]) {
-    let Some(ref editing_change_id) = model.bookmark_edit_change_id else {
-        return;
+    let editing_change_id = match &model.text_input_location {
+        crate::update::TextInputLocation::Bookmark { change_id } => change_id,
+        _ => return,
     };
     let Some(selected_idx) = model.log_list_state.selected() else {
         return;
@@ -110,14 +141,68 @@ fn inject_virtual_bookmark(model: &Model, log_items: &mut [ratatui::text::Text<'
 
     // Create a new line with the virtual bookmark injected
     if let Some(first_line) = text.lines.first_mut() {
-        // Add the virtual bookmark span at the end
-        first_line.spans.push(Span::raw(" "));
+        // Render bookmark name with cursor
+        let bookmark_spans = render_text_with_cursor(
+            &model.text_input,
+            model.text_cursor,
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+            Style::default()
+                .bg(Color::Blue)
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        );
+
+        first_line.spans.push(Span::raw(" ["));
+        first_line.spans.extend(bookmark_spans);
         first_line.spans.push(Span::styled(
-            format!("[{}█]", model.bookmark_edit_name),
+            "]",
             Style::default()
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
         ));
+    }
+}
+
+/// When description editing is active, replace the description line with the user's input
+fn inject_virtual_description(model: &Model, log_items: &mut [ratatui::text::Text<'static>]) {
+    if let crate::update::TextInputLocation::Description { .. } = &model.text_input_location {
+        let Some(selected_idx) = model.log_list_state.selected() else {
+            return;
+        };
+        let Some(text) = log_items.get_mut(selected_idx) else {
+            return;
+        };
+
+        // Get the input text (show placeholder if empty)
+        let input_text = if model.text_input.is_empty() {
+            "(no description set)".to_string()
+        } else {
+            model.text_input.clone()
+        };
+
+        // Replace line 1 (description line) keeping the prefix, or add it if not present
+        if text.lines.len() >= 2 {
+            // Keep the first span (graph prefix like "│  " or "   ")
+            let prefix_span = if !text.lines[1].spans.is_empty() {
+                text.lines[1].spans[0].clone()
+            } else {
+                Span::raw("  ")
+            };
+
+            let desc_spans =
+                render_text_with_cursor(&input_text, model.text_cursor, INPUT_STYLE, CURSOR_STYLE);
+            let mut all_spans = vec![prefix_span, Span::raw(" ")];
+            all_spans.extend(desc_spans);
+            text.lines[1] = Line::from(all_spans);
+        } else {
+            let desc_spans =
+                render_text_with_cursor(&input_text, model.text_cursor, INPUT_STYLE, CURSOR_STYLE);
+            let mut all_spans = vec![Span::raw("  ")];
+            all_spans.extend(desc_spans);
+            text.lines.push(Line::from(all_spans));
+        }
     }
 }
 
@@ -147,19 +232,29 @@ fn apply_saved_selection_highlight(text: &mut ratatui::text::Text<'static>) {
 }
 
 /// Render a centered popup for fuzzy selection
-fn render_popup(model: &Model, frame: &mut Frame, popup: &crate::update::Popup, area: Rect) {
+fn render_popup(
+    model: &Model,
+    frame: &mut Frame,
+    popup: Option<&crate::update::Popup>,
+    area: Rect,
+) {
     use ratatui::widgets::{Clear, Wrap};
 
-    // Handle TextPrompt popup separately
-    if let crate::update::Popup::TextPrompt {
+    // Handle text input popup separately
+    if let crate::update::TextInputLocation::Popup {
         prompt,
         placeholder,
         ..
-    } = popup
+    } = &model.text_input_location
     {
-        render_text_prompt_popup(model, frame, prompt, placeholder, area);
+        render_text_prompt_popup(model, frame, *prompt, *placeholder, area);
         return;
     }
+
+    // For selection popups, we need a popup instance
+    let Some(popup) = popup else {
+        return;
+    };
 
     // Calculate popup size
     let popup_width = (area.width * 2 / 3).min(60).max(40);
@@ -284,27 +379,29 @@ fn render_text_prompt_popup(
 
     // Build input line with cursor positioned at text_cursor
     let mut input_line = vec![Span::raw("> ")];
+    let cursor_pos = model.text_cursor.min(model.text_input.len());
 
     if model.text_input.is_empty() {
-        // Show placeholder when empty, with cursor at the start
-        input_line.push(Span::styled(
-            placeholder,
-            Style::default().fg(Color::DarkGray),
-        ));
-        input_line.push(Span::styled("█", Style::default().fg(Color::Yellow)));
-    } else {
-        // Split text at cursor position
-        let cursor_pos = model.text_cursor.min(model.text_input.len());
-        let before = &model.text_input[..cursor_pos];
-        let after = &model.text_input[cursor_pos..];
+        // Show placeholder with cursor on first character
+        let first_char = placeholder.chars().next().unwrap_or(' ');
+        let rest = &placeholder[first_char.len_utf8().min(placeholder.len())..];
 
-        if !before.is_empty() {
-            input_line.push(Span::raw(before));
+        input_line.push(Span::styled(
+            first_char.to_string(),
+            Style::default().bg(Color::Blue).fg(Color::White),
+        ));
+        if !rest.is_empty() {
+            input_line.push(Span::styled(rest, Style::default().fg(Color::DarkGray)));
         }
-        input_line.push(Span::styled("█", Style::default().fg(Color::Yellow)));
-        if !after.is_empty() {
-            input_line.push(Span::raw(after));
-        }
+    } else {
+        // Split text at cursor position with overlay cursor
+        let cursor_spans = render_text_with_cursor(
+            &model.text_input,
+            cursor_pos,
+            Style::default(),
+            CURSOR_STYLE,
+        );
+        input_line.extend(cursor_spans);
     }
 
     let mut lines = vec![

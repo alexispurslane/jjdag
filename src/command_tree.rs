@@ -360,7 +360,7 @@ impl CommandTree {
                 "Describe",
                 "Selection",
                 vec![KeyCode::Char('d'), KeyCode::Char('d')],
-                CommandTreeNode::new_action(Message::Describe {
+                CommandTreeNode::new_action(Message::DescriptionEditStart {
                     mode: DescribeMode::Default,
                 }),
             ),
@@ -368,7 +368,7 @@ impl CommandTree {
                 "Describe",
                 "Selection ignoring immutability",
                 vec![KeyCode::Char('d'), KeyCode::Char('i')],
-                CommandTreeNode::new_action(Message::Describe {
+                CommandTreeNode::new_action(Message::DescriptionEditStart {
                     mode: DescribeMode::IgnoreImmutable,
                 }),
             ),
@@ -957,6 +957,12 @@ impl CommandTree {
                 "Status",
                 vec![KeyCode::Char('t')],
                 CommandTreeNode::new_action(Message::Status),
+            ),
+            (
+                "Commands",
+                "Split",
+                vec![KeyCode::Char('/')],
+                CommandTreeNode::new_action(Message::Split),
             ),
             (
                 "Commands",

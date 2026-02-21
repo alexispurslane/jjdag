@@ -219,6 +219,19 @@ impl JjCommand {
         Self::_new(&args, global_args, Some(term), ReturnOutput::Stderr)
     }
 
+    pub fn describe_with_message(
+        change_id: &str,
+        message: &str,
+        ignore_immutable: bool,
+        global_args: GlobalArgs,
+    ) -> Self {
+        let mut args = vec!["describe", change_id, "--message", message];
+        if ignore_immutable {
+            args.push("--ignore-immutable");
+        }
+        Self::_new(&args, global_args, None, ReturnOutput::Stderr)
+    }
+
     pub fn duplicate(
         change_id: &str,
         destination_type: Option<&str>,
@@ -315,6 +328,11 @@ impl JjCommand {
     pub fn simplify_parents(revision: &str, mode: &str, global_args: GlobalArgs) -> Self {
         let args = ["simplify-parents", mode, revision];
         Self::_new(&args, global_args, None, ReturnOutput::Stderr)
+    }
+
+    pub fn split(change_id: &str, global_args: GlobalArgs, term: Term) -> Self {
+        let args = ["split", "-r", change_id];
+        Self::_new(&args, global_args, Some(term), ReturnOutput::Stderr)
     }
 
     pub fn undo(global_args: GlobalArgs) -> Self {

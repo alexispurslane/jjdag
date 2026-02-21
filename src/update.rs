@@ -43,19 +43,11 @@ pub enum Popup {
         change_id: String,
         is_named_mode: bool,
     },
-    /// Text input prompt for single-line text entry
-    TextPrompt {
-        prompt: &'static str,
-        placeholder: &'static str,
-        action: TextPromptAction,
-    },
 }
 
 /// Action to take when text prompt is submitted
 #[derive(Debug, Clone)]
 pub enum TextPromptAction {
-    SetRevset,
-    BookmarkRenameSelect,
     BookmarkRenameSubmit {
         old_name: String,
     },
@@ -69,6 +61,28 @@ pub enum TextPromptAction {
     NextPrev {
         direction: NextPrevDirection,
         mode: NextPrevMode,
+    },
+}
+
+/// Location where text input is currently active
+#[derive(Debug, Clone)]
+pub enum TextInputLocation {
+    /// No text input active
+    None,
+    /// Text input in a popup prompt
+    Popup {
+        prompt: &'static str,
+        placeholder: &'static str,
+        action: TextPromptAction,
+    },
+    /// Inline revset editing in header
+    Revset { original: String },
+    /// Inline bookmark creation at selected commit
+    Bookmark { change_id: String },
+    /// Inline description editing at selected commit
+    Description {
+        change_id: String,
+        mode: DescribeMode,
     },
 }
 
@@ -86,7 +100,6 @@ impl Popup {
             Popup::GitFetchRemote { .. } => "Select Remote",
             Popup::GitFetchRemoteBranches { .. } => "Select Branch to Fetch",
             Popup::GitPushBookmark { .. } => "Select Bookmark to Push",
-            Popup::TextPrompt { prompt, .. } => prompt,
         }
     }
 
@@ -103,7 +116,6 @@ impl Popup {
             Popup::GitFetchRemote { remotes, .. } => remotes,
             Popup::GitFetchRemoteBranches { branches, .. } => branches,
             Popup::GitPushBookmark { bookmarks, .. } => bookmarks,
-            Popup::TextPrompt { .. } => &[],
         }
     }
 }
@@ -139,6 +151,20 @@ pub enum Message {
     BookmarkEditSubmit,
     /// Cancel bookmark editing
     BookmarkEditCancel,
+    /// Start editing description inline for the selected commit
+    DescriptionEditStart {
+        mode: DescribeMode,
+    },
+    /// Add a character to the description being edited
+    DescriptionEditChar {
+        ch: char,
+    },
+    /// Remove the last character from the description
+    DescriptionEditBackspace,
+    /// Submit the description edit
+    DescriptionEditSubmit,
+    /// Cancel description editing
+    DescriptionEditCancel,
     /// Add a character to the popup filter
     PopupFilterChar {
         ch: char,
@@ -175,9 +201,7 @@ pub enum Message {
     TextInputCancel,
     Clear,
     Commit,
-    Describe {
-        mode: DescribeMode,
-    },
+
     Duplicate {
         destination_type: DuplicateDestinationType,
         destination: DuplicateDestination,
@@ -276,6 +300,7 @@ pub enum Message {
     SimplifyParents {
         mode: SimplifyParentsMode,
     },
+    Split,
     Squash {
         mode: SquashMode,
     },
@@ -500,10 +525,10 @@ fn handle_event(model: &mut Model) -> Result<Option<Message>> {
 }
 
 fn handle_key(model: &mut Model, key: event::KeyEvent) -> Option<Message> {
-    // When popup is active, handle based on popup type
-    if let Some(ref popup) = model.current_popup {
-        // Text prompt popups handle text input
-        if matches!(popup, crate::update::Popup::TextPrompt { .. }) {
+    // When text input is active (single source of truth)
+    match &model.text_input_location {
+        // Popup text prompts handle text input
+        crate::update::TextInputLocation::Popup { .. } => {
             return match key.code {
                 KeyCode::Enter => Some(Message::TextInputSubmit),
                 KeyCode::Esc => Some(Message::TextInputCancel),
@@ -529,7 +554,56 @@ fn handle_key(model: &mut Model, key: event::KeyEvent) -> Option<Message> {
                 _ => None,
             };
         }
-        // List-based popups handle filter navigation
+        // Revset editing mode
+        crate::update::TextInputLocation::Revset { .. } => {
+            return match key.code {
+                KeyCode::Enter => Some(Message::SetRevsetSubmit),
+                KeyCode::Esc => Some(Message::SetRevsetCancel),
+                KeyCode::Backspace => Some(Message::SetRevsetBackspace),
+                KeyCode::Left => Some(Message::SetRevsetMoveLeft),
+                KeyCode::Right => Some(Message::SetRevsetMoveRight),
+                KeyCode::Home => Some(Message::SetRevsetMoveHome),
+                KeyCode::End => Some(Message::SetRevsetMoveEnd),
+                KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    Some(Message::SetRevsetMoveHome)
+                }
+                KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    Some(Message::SetRevsetMoveEnd)
+                }
+                KeyCode::Char(c) => Some(Message::SetRevsetChar { ch: c }),
+                _ => None,
+            };
+        }
+        // Bookmark editing mode
+        crate::update::TextInputLocation::Bookmark { .. } => {
+            return match key.code {
+                KeyCode::Enter => Some(Message::BookmarkEditSubmit),
+                KeyCode::Esc => Some(Message::BookmarkEditCancel),
+                KeyCode::Backspace => Some(Message::BookmarkEditBackspace),
+                KeyCode::Left => Some(Message::TextInputMoveLeft),
+                KeyCode::Right => Some(Message::TextInputMoveRight),
+                KeyCode::Char(c) => Some(Message::BookmarkEditChar { ch: c }),
+                _ => None,
+            };
+        }
+        // Description editing mode
+        crate::update::TextInputLocation::Description { .. } => {
+            return match key.code {
+                KeyCode::Enter => Some(Message::DescriptionEditSubmit),
+                KeyCode::Esc => Some(Message::DescriptionEditCancel),
+                KeyCode::Backspace => Some(Message::DescriptionEditBackspace),
+                KeyCode::Left => Some(Message::TextInputMoveLeft),
+                KeyCode::Right => Some(Message::TextInputMoveRight),
+                KeyCode::Char(c) => Some(Message::DescriptionEditChar { ch: c }),
+                _ => None,
+            };
+        }
+        // No text input active
+        crate::update::TextInputLocation::None => {}
+    }
+
+    // When a selection popup is active (not text input)
+    if model.current_popup.is_some() {
         return match key.code {
             KeyCode::Enter => Some(Message::PopupSelect),
             KeyCode::Esc => Some(Message::PopupCancel),
@@ -537,38 +611,6 @@ fn handle_key(model: &mut Model, key: event::KeyEvent) -> Option<Message> {
             KeyCode::Down | KeyCode::Char('j') => Some(Message::PopupNext),
             KeyCode::Up | KeyCode::Char('k') => Some(Message::PopupPrev),
             KeyCode::Char(c) => Some(Message::PopupFilterChar { ch: c }),
-            _ => None,
-        };
-    }
-
-    // When in revset editing mode, capture text input
-    if model.revset_edit_active {
-        return match key.code {
-            KeyCode::Enter => Some(Message::SetRevsetSubmit),
-            KeyCode::Esc => Some(Message::SetRevsetCancel),
-            KeyCode::Backspace => Some(Message::SetRevsetBackspace),
-            KeyCode::Left => Some(Message::SetRevsetMoveLeft),
-            KeyCode::Right => Some(Message::SetRevsetMoveRight),
-            KeyCode::Home => Some(Message::SetRevsetMoveHome),
-            KeyCode::End => Some(Message::SetRevsetMoveEnd),
-            KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                Some(Message::SetRevsetMoveHome)
-            }
-            KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                Some(Message::SetRevsetMoveEnd)
-            }
-            KeyCode::Char(c) => Some(Message::SetRevsetChar { ch: c }),
-            _ => None,
-        };
-    }
-
-    // When in bookmark editing mode, capture text input
-    if model.bookmark_edit_change_id.is_some() {
-        return match key.code {
-            KeyCode::Enter => Some(Message::BookmarkEditSubmit),
-            KeyCode::Esc => Some(Message::BookmarkEditCancel),
-            KeyCode::Backspace => Some(Message::BookmarkEditBackspace),
-            KeyCode::Char(c) => Some(Message::BookmarkEditChar { ch: c }),
             _ => None,
         };
     }
@@ -669,6 +711,12 @@ fn handle_msg(term: Term, model: &mut Model, msg: Message) -> Result<Option<Mess
         Message::BookmarkEditBackspace => model.bookmark_edit_backspace(),
         Message::BookmarkEditSubmit => model.bookmark_edit_submit(term)?,
         Message::BookmarkEditCancel => model.bookmark_edit_cancel(),
+        // Description editing
+        Message::DescriptionEditStart { mode } => model.description_edit_start(mode)?,
+        Message::DescriptionEditChar { ch } => model.text_input_char(ch),
+        Message::DescriptionEditBackspace => model.text_input_backspace(),
+        Message::DescriptionEditSubmit => model.description_edit_submit(term)?,
+        Message::DescriptionEditCancel => model.text_input_cancel(),
         // Popup messages
         Message::PopupFilterChar { ch } => model.popup_filter_char(ch),
         Message::PopupFilterBackspace => model.popup_filter_backspace(),
@@ -687,7 +735,7 @@ fn handle_msg(term: Term, model: &mut Model, msg: Message) -> Result<Option<Mess
         Message::TextInputSubmit => model.text_input_submit(term)?,
         Message::TextInputCancel => model.text_input_cancel(),
         Message::Commit => model.jj_commit(term)?,
-        Message::Describe { mode } => model.jj_describe(mode, term)?,
+
         Message::Duplicate {
             destination_type,
             destination,
@@ -727,6 +775,7 @@ fn handle_msg(term: Term, model: &mut Model, msg: Message) -> Result<Option<Mess
         Message::SaveSelection => model.save_selection()?,
         Message::Sign { action, range } => model.jj_sign(action, range)?,
         Message::SimplifyParents { mode } => model.jj_simplify_parents(mode)?,
+        Message::Split => model.jj_split(term)?,
         Message::Squash { mode } => model.jj_squash(mode, term)?,
         Message::Status => model.jj_status(term)?,
         Message::Undo => model.jj_undo()?,

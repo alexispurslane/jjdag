@@ -3,13 +3,13 @@ use crate::{
     log_tree::{
         DIFF_HUNK_LINE_IDX, JjLog, LogTreeNode, TreePosition, get_parent_tree_position, strip_ansi,
     },
-    shell_out::{JjCommand, JjCommandError, get_input_from_editor},
+    shell_out::{JjCommand, JjCommandError},
     terminal::Term,
     update::{
-        AbandonMode, AbsorbMode, BookmarkMoveMode, DescribeMode, DuplicateDestination,
-        DuplicateDestinationType, GitFetchMode, GitPushMode, InterdiffMode, Message,
-        MetaeditAction, NewMode, NextPrevDirection, NextPrevMode, ParallelizeSource,
-        RebaseDestination, RebaseDestinationType, RebaseSourceType, RestoreMode, RevertDestination,
+        AbandonMode, AbsorbMode, BookmarkMoveMode, DuplicateDestination, DuplicateDestinationType,
+        GitFetchMode, GitPushMode, InterdiffMode, Message, MetaeditAction, NewMode,
+        NextPrevDirection, NextPrevMode, ParallelizeSource, RebaseDestination,
+        RebaseDestinationType, RebaseSourceType, RestoreMode, RevertDestination,
         RevertDestinationType, RevertRevision, SignAction, SimplifyParentsMode, SquashMode,
         TextPromptAction, ViewMode,
     },
@@ -58,13 +58,11 @@ pub struct Model {
     pub log_list_layout: Rect,
     pub log_list_scroll_padding: usize,
     pub info_list: Option<Text<'static>>,
-    /// When Some(change_id), we're editing a bookmark name for that commit
-    pub bookmark_edit_change_id: Option<String>,
-    /// The bookmark name being typed (valid when bookmark_edit_change_id is Some)
-    pub bookmark_edit_name: String,
-    /// Current fuzzy searchable popup, if any
+    /// Current fuzzy searchable popup for selection lists
     pub current_popup: Option<crate::update::Popup>,
-    /// Filter text for the current popup
+    /// Where text input is currently active (source of truth)
+    pub text_input_location: crate::update::TextInputLocation,
+    /// Filter text for fuzzy searching in popups
     pub popup_filter: String,
     /// Selected index in the current popup's filtered list
     pub popup_selection: usize,
@@ -72,10 +70,6 @@ pub struct Model {
     pub text_input: String,
     /// Cursor position in text input (byte index)
     pub text_cursor: usize,
-    /// Whether we're in revset editing mode (inline override)
-    pub revset_edit_active: bool,
-    /// Original revset value to restore on cancel
-    pub revset_original: String,
 }
 
 #[derive(Debug)]
@@ -102,15 +96,12 @@ impl Model {
             log_list_layout: Rect::ZERO,
             log_list_scroll_padding: LOG_LIST_SCROLL_PADDING,
             info_list: None,
-            bookmark_edit_change_id: None,
-            bookmark_edit_name: String::new(),
             current_popup: None,
+            text_input_location: crate::update::TextInputLocation::None,
             popup_filter: String::new(),
             popup_selection: 0,
             text_input: String::new(),
             text_cursor: 0,
-            revset_edit_active: false,
-            revset_original: String::new(),
             display_repository: format_repository_for_display(&repository),
             global_args: GlobalArgs {
                 repository,
@@ -381,8 +372,9 @@ impl Model {
 
     pub fn set_revset(&mut self, _term: Term) -> Result<()> {
         // Enter inline revset editing mode
-        self.revset_edit_active = true;
-        self.revset_original = self.revset.clone();
+        self.text_input_location = crate::update::TextInputLocation::Revset {
+            original: self.revset.clone(),
+        };
         self.text_input = self.revset.clone();
         self.text_cursor = self.text_input.len();
         Ok(())
@@ -409,7 +401,7 @@ impl Model {
 
     /// Cancel revset editing
     pub fn revset_edit_cancel(&mut self) {
-        self.revset_edit_active = false;
+        self.text_input_location = crate::update::TextInputLocation::None;
         self.text_input.clear();
         self.text_cursor = 0;
     }
@@ -418,9 +410,12 @@ impl Model {
     pub fn revset_edit_submit(&mut self) -> Result<()> {
         let new_revset = std::mem::take(&mut self.text_input);
         self.text_cursor = 0;
-        self.revset_edit_active = false;
 
-        let old_revset = std::mem::take(&mut self.revset_original);
+        let old_revset = match &self.text_input_location {
+            crate::update::TextInputLocation::Revset { original } => original.clone(),
+            _ => self.revset.clone(),
+        };
+        self.text_input_location = crate::update::TextInputLocation::None;
         self.revset = new_revset.clone();
 
         match self.sync() {
@@ -630,36 +625,94 @@ impl Model {
         let Some(change_id) = self.get_selected_change_id() else {
             return self.invalid_selection();
         };
-        self.bookmark_edit_change_id = Some(change_id.to_string());
-        self.bookmark_edit_name = String::new();
+        let change_id = change_id.to_string();
+        self.text_input.clear();
+        self.text_cursor = 0;
+        self.text_input_location = crate::update::TextInputLocation::Bookmark { change_id };
         Ok(())
     }
 
     /// Add a character to the bookmark name being edited
     pub fn bookmark_edit_char(&mut self, ch: char) {
-        self.bookmark_edit_name.push(ch);
+        self.text_input.insert(self.text_cursor, ch);
+        self.text_cursor += ch.len_utf8();
     }
 
     /// Remove the last character from the bookmark name
     pub fn bookmark_edit_backspace(&mut self) {
-        self.bookmark_edit_name.pop();
+        if self.text_cursor > 0 {
+            let prev_char_len = self.text_input[..self.text_cursor]
+                .chars()
+                .last()
+                .map(|c| c.len_utf8())
+                .unwrap_or(1);
+            self.text_cursor -= prev_char_len;
+            self.text_input.remove(self.text_cursor);
+        }
     }
 
     /// Cancel bookmark editing
     pub fn bookmark_edit_cancel(&mut self) {
-        self.bookmark_edit_change_id = None;
-        self.bookmark_edit_name.clear();
+        self.text_input_location = crate::update::TextInputLocation::None;
+        self.text_input.clear();
+        self.text_cursor = 0;
     }
 
     /// Submit the bookmark creation from inline edit
     pub fn bookmark_edit_submit(&mut self, _term: Term) -> Result<()> {
-        let Some(change_id) = self.bookmark_edit_change_id.clone() else {
-            return Ok(());
+        let change_id = match &self.text_input_location {
+            crate::update::TextInputLocation::Bookmark { change_id } => change_id.clone(),
+            _ => return Ok(()),
         };
-        let bookmark_name = self.bookmark_edit_name.clone();
+        let bookmark_name = self.text_input.clone();
         self.bookmark_edit_cancel(); // Clear editing state first
 
         let cmd = JjCommand::bookmark_create(&bookmark_name, &change_id, self.global_args.clone());
+        self.queue_jj_command(cmd)
+    }
+
+    // ===== Description Editing Methods =====
+
+    /// Start inline description editing for the selected commit
+    pub fn description_edit_start(&mut self, mode: crate::update::DescribeMode) -> Result<()> {
+        let Some(change_id) = self.get_selected_change_id() else {
+            return self.invalid_selection();
+        };
+        let change_id = change_id.to_string();
+
+        // Get the existing description to pre-fill
+        let tree_pos = self.get_selected_tree_position();
+        let existing_desc = self
+            .jj_log
+            .get_tree_commit(&tree_pos)
+            .and_then(|c| c.description_first_line.clone())
+            .unwrap_or_default();
+
+        self.text_input = existing_desc;
+        self.text_cursor = self.text_input.len();
+        self.text_input_location =
+            crate::update::TextInputLocation::Description { change_id, mode };
+        Ok(())
+    }
+
+    /// Submit the description edit using jj describe
+    pub fn description_edit_submit(&mut self, _term: Term) -> Result<()> {
+        let (change_id, mode) = match &self.text_input_location {
+            crate::update::TextInputLocation::Description { change_id, mode } => {
+                (change_id.clone(), *mode)
+            }
+            _ => return Ok(()),
+        };
+        let message = self.text_input.clone();
+        self.text_input_cancel(); // Clear editing state first
+
+        let ignore_immutable = mode == crate::update::DescribeMode::IgnoreImmutable;
+        let cmd = JjCommand::describe_with_message(
+            &change_id,
+            &message,
+            ignore_immutable,
+            self.global_args.clone(),
+        );
         self.queue_jj_command(cmd)
     }
 
@@ -753,14 +806,16 @@ impl Model {
             }
             crate::update::Popup::BookmarkRenameSelect { .. } => {
                 // Open text prompt for new bookmark name
-                let popup = crate::update::Popup::TextPrompt {
+                self.text_input.clear();
+                self.text_cursor = 0;
+                self.text_input_location = crate::update::TextInputLocation::Popup {
                     prompt: "Enter New Bookmark Name",
                     placeholder: "new-bookmark-name",
                     action: crate::update::TextPromptAction::BookmarkRenameSubmit {
                         old_name: selected,
                     },
                 };
-                self.open_popup(popup)
+                Ok(())
             }
             crate::update::Popup::BookmarkSet { .. } => {
                 if let Some(change_id) = self.get_selected_change_id() {
@@ -865,10 +920,6 @@ impl Model {
                     self.queue_jj_command(cmd)
                 }
             }
-            crate::update::Popup::TextPrompt { .. } => {
-                // Text prompts are handled via TextInputSubmit message, not here
-                Ok(())
-            }
         }
     }
 
@@ -946,28 +997,23 @@ impl Model {
 
     /// Cancel text input and close popup
     pub fn text_input_cancel(&mut self) {
-        self.current_popup = None;
+        self.text_input_location = crate::update::TextInputLocation::None;
         self.text_input.clear();
         self.text_cursor = 0;
     }
 
     /// Submit text input and execute the associated action
-    pub fn text_input_submit(&mut self, term: Term) -> Result<()> {
-        let Some(popup) = self.current_popup.take() else {
-            return Ok(());
-        };
-        let crate::update::Popup::TextPrompt { action, .. } = popup else {
-            self.text_input.clear();
-            self.text_cursor = 0;
-            return Ok(());
+    pub fn text_input_submit(&mut self, _term: Term) -> Result<()> {
+        let action = match &self.text_input_location {
+            crate::update::TextInputLocation::Popup { action, .. } => action.clone(),
+            _ => return Ok(()),
         };
 
         let text = std::mem::take(&mut self.text_input);
         self.text_cursor = 0;
+        self.text_input_location = crate::update::TextInputLocation::None;
 
         match action {
-            TextPromptAction::SetRevset => self.set_revset_with_text(term, text),
-            TextPromptAction::BookmarkRenameSelect => self.bookmark_rename_select(term, text),
             TextPromptAction::BookmarkRenameSubmit { old_name } => {
                 self.bookmark_rename_submit(old_name, text)
             }
@@ -982,15 +1028,6 @@ impl Model {
                 self.next_prev_with_offset(direction, mode, text)
             }
         }
-    }
-
-    // Placeholder methods for text prompt actions - to be implemented in Phase 4
-    fn set_revset_with_text(&mut self, _term: Term, _text: String) -> Result<()> {
-        todo!("set_revset_with_text")
-    }
-
-    fn bookmark_rename_select(&mut self, _term: Term, _text: String) -> Result<()> {
-        todo!("bookmark_rename_select")
     }
 
     fn bookmark_rename_submit(&mut self, old_name: String, new_name: String) -> Result<()> {
@@ -1295,15 +1332,6 @@ impl Model {
     pub fn jj_commit(&mut self, term: Term) -> Result<()> {
         let maybe_file_path = self.get_selected_file_path();
         let cmd = JjCommand::commit(maybe_file_path, self.global_args.clone(), term);
-        self.queue_jj_command(cmd)
-    }
-
-    pub fn jj_describe(&mut self, mode: DescribeMode, term: Term) -> Result<()> {
-        let Some(change_id) = self.get_selected_change_id() else {
-            return self.invalid_selection();
-        };
-        let ignore_immutable = mode == DescribeMode::IgnoreImmutable;
-        let cmd = JjCommand::describe(change_id, ignore_immutable, self.global_args.clone(), term);
         self.queue_jj_command(cmd)
     }
 
@@ -1641,24 +1669,26 @@ impl Model {
                 self.queue_jj_command(cmd)
             }
             MetaeditAction::SetAuthor => {
-                let popup = crate::update::Popup::TextPrompt {
+                let change_id = change_id.to_string();
+                self.text_input.clear();
+                self.text_cursor = 0;
+                self.text_input_location = crate::update::TextInputLocation::Popup {
                     prompt: "Set Author",
                     placeholder: "Name <email@example.com>",
-                    action: crate::update::TextPromptAction::MetaeditSetAuthor {
-                        change_id: change_id.to_string(),
-                    },
+                    action: crate::update::TextPromptAction::MetaeditSetAuthor { change_id },
                 };
-                self.open_popup(popup)
+                Ok(())
             }
             MetaeditAction::SetAuthorTimestamp => {
-                let popup = crate::update::Popup::TextPrompt {
+                let change_id = change_id.to_string();
+                self.text_input.clear();
+                self.text_cursor = 0;
+                self.text_input_location = crate::update::TextInputLocation::Popup {
                     prompt: "Set Author Timestamp",
                     placeholder: "2000-01-23T01:23:45-08:00",
-                    action: crate::update::TextPromptAction::MetaeditSetTimestamp {
-                        change_id: change_id.to_string(),
-                    },
+                    action: crate::update::TextPromptAction::MetaeditSetTimestamp { change_id },
                 };
-                self.open_popup(popup)
+                Ok(())
             }
         }
     }
@@ -1706,12 +1736,14 @@ impl Model {
         _term: Term,
     ) -> Result<()> {
         if offset {
-            let popup = crate::update::Popup::TextPrompt {
+            self.text_input.clear();
+            self.text_cursor = 0;
+            self.text_input_location = crate::update::TextInputLocation::Popup {
                 prompt: "Enter Offset",
                 placeholder: "positive integer",
                 action: crate::update::TextPromptAction::NextPrev { direction, mode },
             };
-            self.open_popup(popup)
+            Ok(())
         } else {
             let mode_flag = match mode {
                 NextPrevMode::Conflict => Some("--conflict"),
@@ -1743,12 +1775,14 @@ impl Model {
                 self.queue_jj_command(cmd)
             }
             ParallelizeSource::Revset => {
-                let popup = crate::update::Popup::TextPrompt {
+                self.text_input.clear();
+                self.text_cursor = 0;
+                self.text_input_location = crate::update::TextInputLocation::Popup {
                     prompt: "Parallelize Revset",
                     placeholder: "Enter revset expression",
                     action: crate::update::TextPromptAction::ParallelizeRevset,
                 };
-                self.open_popup(popup)
+                Ok(())
             }
             ParallelizeSource::Selection => {
                 let Some(change_id) = self.get_selected_change_id() else {
@@ -1964,6 +1998,14 @@ impl Model {
             SimplifyParentsMode::Source => "-s",
         };
         let cmd = JjCommand::simplify_parents(change_id, mode, self.global_args.clone());
+        self.queue_jj_command(cmd)
+    }
+
+    pub fn jj_split(&mut self, term: Term) -> Result<()> {
+        let Some(change_id) = self.get_selected_change_id() else {
+            return self.invalid_selection();
+        };
+        let cmd = JjCommand::split(change_id, self.global_args.clone(), term);
         self.queue_jj_command(cmd)
     }
 
