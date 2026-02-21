@@ -423,6 +423,11 @@ impl JjCommand {
         Self::_new(&args, global_args, None, ReturnOutput::Stderr)
     }
 
+    pub fn file_list_untracked(global_args: GlobalArgs) -> Self {
+        let args = ["file", "list", "--untracked"];
+        Self::_new(&args, global_args, None, ReturnOutput::Stdout)
+    }
+
     pub fn metaedit(
         change_id: &str,
         flag: &str,
@@ -448,6 +453,20 @@ impl JjCommand {
         Self::_new(&args, global_args, None, ReturnOutput::Stderr)
     }
 
+    pub fn git_remote_list(global_args: GlobalArgs) -> Self {
+        let args = ["git", "remote", "list"];
+        Self::_new(&args, global_args, None, ReturnOutput::Stdout)
+    }
+
+    pub fn git_branch_list(remote: Option<&str>, global_args: GlobalArgs) -> Self {
+        let mut args = vec!["git", "branch", "list"];
+        if let Some(remote) = remote {
+            args.push("-r");
+            args.push(remote);
+        }
+        Self::_new(&args, global_args, None, ReturnOutput::Stdout)
+    }
+
     pub fn git_push(flag: Option<&str>, value: Option<&str>, global_args: GlobalArgs) -> Self {
         let mut args = vec!["git", "push"];
         if let Some(flag) = flag {
@@ -471,9 +490,12 @@ impl JjCommand {
     }
 
     pub fn bookmark_list(global_args: GlobalArgs) -> Self {
-        // Fetch bookmarks with no template - we'll parse the default output
         let args = ["bookmark", "list"];
         Self::_new(&args, global_args, None, ReturnOutput::Stdout)
+    }
+
+    pub fn bookmark_list_with_args(args: &[&str], global_args: GlobalArgs) -> Self {
+        Self::_new(args, global_args, None, ReturnOutput::Stdout)
     }
 
     pub fn bookmark_delete(bookmark_names: &str, global_args: GlobalArgs) -> Self {

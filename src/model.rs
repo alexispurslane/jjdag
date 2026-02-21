@@ -724,25 +724,30 @@ impl Model {
                 let cmd = JjCommand::file_track(&selected, self.global_args.clone());
                 self.queue_jj_command(cmd)
             }
-            crate::update::Popup::GitFetchBranch { remote, .. } => {
-                let cmd =
-                    JjCommand::git_fetch(Some(&remote), Some(&selected), self.global_args.clone());
-                self.queue_jj_command(cmd)
-            }
+
             crate::update::Popup::GitFetchRemote { .. } => {
                 let cmd = JjCommand::git_fetch(None, Some(&selected), self.global_args.clone());
                 self.queue_jj_command(cmd)
             }
-            crate::update::Popup::GitPushBookmark { .. } => {
-                if let Some(_change_id) = self.get_selected_change_id() {
+            crate::update::Popup::GitPushBookmark {
+                change_id,
+                is_named_mode,
+                ..
+            } => {
+                if is_named_mode {
+                    // Named mode: create bookmark at specific revision and push
+                    let value = format!("{}={}", selected, change_id);
                     let cmd = JjCommand::git_push(
-                        Some("--bookmark"),
-                        Some(&selected),
+                        Some("--named"),
+                        Some(&value),
                         self.global_args.clone(),
                     );
                     self.queue_jj_command(cmd)
                 } else {
-                    self.invalid_selection()
+                    // Bookmark mode: push existing bookmark
+                    let cmd =
+                        JjCommand::git_push(Some("-b"), Some(&selected), self.global_args.clone());
+                    self.queue_jj_command(cmd)
                 }
             }
         }
@@ -753,20 +758,6 @@ impl Model {
         self.current_popup = None;
         self.popup_filter = String::new();
         self.popup_selection = 0;
-    }
-
-    /// Original bookmark_create using external editor (for compatibility)
-    pub fn jj_bookmark_create(&mut self, term: Term) -> Result<()> {
-        let Some(change_id) = self.get_selected_change_id() else {
-            return self.invalid_selection();
-        };
-        let Some(bookmark_names) =
-            get_input_from_editor(term, None, Some("Enter the new bookmark(s)"))?
-        else {
-            return self.cancelled();
-        };
-        let cmd = JjCommand::bookmark_create(&bookmark_names, change_id, self.global_args.clone());
-        self.queue_jj_command(cmd)
     }
 
     pub fn jj_bookmark_delete(&mut self, _term: Term) -> Result<()> {
@@ -794,18 +785,38 @@ impl Model {
         self.open_popup(popup)
     }
 
-    pub fn jj_bookmark_forget(&mut self, include_remotes: bool, term: Term) -> Result<()> {
-        let prompt = if include_remotes {
-            "Enter the bookmark(s) to forget, including remotes"
-        } else {
-            "Enter the bookmark(s) to forget"
+    pub fn jj_bookmark_forget(&mut self, include_remotes: bool, _term: Term) -> Result<()> {
+        // Fetch bookmarks and open popup
+        let mut args = vec!["bookmark", "list", "-T", "name"];
+        if include_remotes {
+            args.push("--all-remotes");
+        }
+        let output = JjCommand::bookmark_list_with_args(&args, self.global_args.clone()).run()?;
+        let bookmarks: Vec<String> = output
+            .lines()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(|s| {
+                let clean = strip_ansi(s);
+                clean.split(':').next().unwrap_or(&clean).trim().to_string()
+            })
+            .collect();
+
+        if bookmarks.is_empty() {
+            let msg = if include_remotes {
+                "No bookmarks to forget (including remotes)"
+            } else {
+                "No bookmarks to forget"
+            };
+            self.info_list = Some(msg.into_text()?);
+            return Ok(());
+        }
+
+        let popup = crate::update::Popup::BookmarkForget {
+            bookmarks,
+            include_remotes,
         };
-        let Some(bookmark_names) = get_input_from_editor(term, None, Some(prompt))? else {
-            return self.cancelled();
-        };
-        let cmd =
-            JjCommand::bookmark_forget(&bookmark_names, include_remotes, self.global_args.clone());
-        self.queue_jj_command(cmd)
+        self.open_popup(popup)
     }
 
     pub fn jj_bookmark_move(&mut self, mode: BookmarkMoveMode) -> Result<()> {
@@ -863,37 +874,82 @@ impl Model {
         self.queue_jj_command(cmd)
     }
 
-    pub fn jj_bookmark_set(&mut self, term: Term) -> Result<()> {
-        let Some(change_id) = self.get_selected_change_id() else {
+    pub fn jj_bookmark_set(&mut self, _term: Term) -> Result<()> {
+        if self.get_selected_change_id().is_none() {
             return self.invalid_selection();
-        };
-        let Some(bookmark_names) =
-            get_input_from_editor(term, None, Some("Enter the bookmark(s) to set"))?
-        else {
-            return self.cancelled();
-        };
-        let cmd = JjCommand::bookmark_set(&bookmark_names, change_id, self.global_args.clone());
-        self.queue_jj_command(cmd)
+        }
+        // Fetch bookmarks and open popup
+        let output = JjCommand::bookmark_list(self.global_args.clone()).run()?;
+        let bookmarks: Vec<String> = output
+            .lines()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(|s| {
+                let clean = strip_ansi(s);
+                clean.split(':').next().unwrap_or(&clean).trim().to_string()
+            })
+            .collect();
+
+        if bookmarks.is_empty() {
+            self.info_list = Some("No bookmarks to set".into_text()?);
+            return Ok(());
+        }
+
+        let popup = crate::update::Popup::BookmarkSet { bookmarks };
+        self.open_popup(popup)
     }
 
-    pub fn jj_bookmark_track(&mut self, term: Term) -> Result<()> {
-        let Some(bookmark_at_remote) =
-            get_input_from_editor(term, None, Some("Enter the bookmark@remote to track"))?
-        else {
-            return self.cancelled();
-        };
-        let cmd = JjCommand::bookmark_track(&bookmark_at_remote, self.global_args.clone());
-        self.queue_jj_command(cmd)
+    pub fn jj_bookmark_track(&mut self, _term: Term) -> Result<()> {
+        // Fetch remote bookmarks and open popup
+        let output = JjCommand::bookmark_list_with_args(
+            &["bookmark", "list", "--all-remotes"],
+            self.global_args.clone(),
+        )
+        .run()?;
+        let remote_bookmarks: Vec<String> = output
+            .lines()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(|s| {
+                let clean = strip_ansi(s);
+                clean.split(':').next().unwrap_or(&clean).trim().to_string()
+            })
+            .collect();
+
+        if remote_bookmarks.is_empty() {
+            self.info_list = Some("No remote bookmarks to track".into_text()?);
+            return Ok(());
+        }
+
+        let popup = crate::update::Popup::BookmarkTrack { remote_bookmarks };
+        self.open_popup(popup)
     }
 
-    pub fn jj_bookmark_untrack(&mut self, term: Term) -> Result<()> {
-        let Some(bookmark_at_remote) =
-            get_input_from_editor(term, None, Some("Enter the bookmark@remote to untrack"))?
-        else {
-            return self.cancelled();
-        };
-        let cmd = JjCommand::bookmark_untrack(&bookmark_at_remote, self.global_args.clone());
-        self.queue_jj_command(cmd)
+    pub fn jj_bookmark_untrack(&mut self, _term: Term) -> Result<()> {
+        // Fetch tracked remote bookmarks and open popup
+        let output = JjCommand::bookmark_list_with_args(
+            &["bookmark", "list", "--all-remotes"],
+            self.global_args.clone(),
+        )
+        .run()?;
+        let tracked_bookmarks: Vec<String> = output
+            .lines()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(|s| {
+                let clean = strip_ansi(s);
+                clean.split(':').next().unwrap_or(&clean).trim().to_string()
+            })
+            .filter(|s| s.contains('@'))
+            .collect();
+
+        if tracked_bookmarks.is_empty() {
+            self.info_list = Some("No tracked remote bookmarks to untrack".into_text()?);
+            return Ok(());
+        }
+
+        let popup = crate::update::Popup::BookmarkUntrack { tracked_bookmarks };
+        self.open_popup(popup)
     }
 
     pub fn jj_commit(&mut self, term: Term) -> Result<()> {
@@ -969,14 +1025,24 @@ impl Model {
         self.queue_jj_command(cmd)
     }
 
-    pub fn jj_file_track(&mut self, term: Term) -> Result<()> {
-        let Some(file_path) =
-            get_input_from_editor(term, None, Some("Enter the file path(s) to track"))?
-        else {
-            return self.cancelled();
-        };
-        let cmd = JjCommand::file_track(&file_path, self.global_args.clone());
-        self.queue_jj_command(cmd)
+    pub fn jj_file_track(&mut self, _term: Term) -> Result<()> {
+        // Fetch untracked files and open popup
+        let output = JjCommand::file_list_untracked(self.global_args.clone()).run()?;
+        let untracked_files: Vec<String> = output
+            .lines()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(|s| strip_ansi(s).trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+
+        if untracked_files.is_empty() {
+            self.info_list = Some("No untracked files to track".into_text()?);
+            return Ok(());
+        }
+
+        let popup = crate::update::Popup::FileTrack { untracked_files };
+        self.open_popup(popup)
     }
 
     pub fn jj_file_untrack(&mut self) -> Result<()> {
@@ -990,33 +1056,53 @@ impl Model {
         self.queue_jj_command(cmd)
     }
 
-    pub fn jj_git_fetch(&mut self, mode: GitFetchMode, term: Term) -> Result<()> {
-        let (flag, value) = match mode {
-            GitFetchMode::Default => (None, None),
-            GitFetchMode::AllRemotes => (Some("--all-remotes"), None),
-            GitFetchMode::Tracked => (Some("--tracked"), None),
+    pub fn jj_git_fetch(&mut self, mode: GitFetchMode, _term: Term) -> Result<()> {
+        match mode {
+            GitFetchMode::Default => {
+                let cmd = JjCommand::git_fetch(None, None, self.global_args.clone());
+                self.queue_jj_command(cmd)
+            }
+            GitFetchMode::AllRemotes => {
+                let cmd =
+                    JjCommand::git_fetch(Some("--all-remotes"), None, self.global_args.clone());
+                self.queue_jj_command(cmd)
+            }
+            GitFetchMode::Tracked => {
+                let cmd = JjCommand::git_fetch(Some("--tracked"), None, self.global_args.clone());
+                self.queue_jj_command(cmd)
+            }
             GitFetchMode::Branch => {
-                let Some(branch) =
-                    get_input_from_editor(term, None, Some("Enter the branch to fetch"))?
-                else {
-                    return self.cancelled();
-                };
-                (Some("-b"), Some(branch))
+                // Listing remote branches before fetching is not supported by jj
+                // User needs to know the branch name beforehand
+                self.info_list = Some(
+                    "Branch fetching: Use 'g f' to fetch all, or specify branch name manually with jj git fetch -b <branch>"
+                        .into_text()?,
+                );
+                Ok(())
             }
             GitFetchMode::Remote => {
-                let Some(remote) =
-                    get_input_from_editor(term, None, Some("Enter the remote to fetch from"))?
-                else {
-                    return self.cancelled();
-                };
-                (Some("--remote"), Some(remote))
+                // Fetch remotes and show popup
+                let output = JjCommand::git_remote_list(self.global_args.clone()).run()?;
+                let remotes: Vec<String> = output
+                    .lines()
+                    .map(|s| s.trim())
+                    .filter(|s| !s.is_empty())
+                    .map(|s| strip_ansi(s).trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+
+                if remotes.is_empty() {
+                    self.info_list = Some("No remotes configured".into_text()?);
+                    return Ok(());
+                }
+
+                let popup = crate::update::Popup::GitFetchRemote { remotes };
+                self.open_popup(popup)
             }
-        };
-        let cmd = JjCommand::git_fetch(flag, value.as_deref(), self.global_args.clone());
-        self.queue_jj_command(cmd)
+        }
     }
 
-    pub fn jj_git_push(&mut self, mode: GitPushMode, term: Term) -> Result<()> {
+    pub fn jj_git_push(&mut self, mode: GitPushMode, _term: Term) -> Result<()> {
         let (flag, value) = match mode {
             GitPushMode::Default => (None, None),
             GitPushMode::All => (Some("--all"), None),
@@ -1038,26 +1124,54 @@ impl Model {
                 let Some(change_id) = self.get_selected_change_id() else {
                     return self.invalid_selection();
                 };
-                let Some(bookmark_name) = get_input_from_editor(
-                    term,
-                    None,
-                    Some("Enter the bookmark name for this revision"),
-                )?
-                else {
-                    return self.cancelled();
+                // Fetch bookmarks and open popup
+                let output = JjCommand::bookmark_list(self.global_args.clone()).run()?;
+                let bookmarks: Vec<String> = output
+                    .lines()
+                    .map(|s| s.trim())
+                    .filter(|s| !s.is_empty())
+                    .map(|s| {
+                        let clean = strip_ansi(s);
+                        clean.split(':').next().unwrap_or(&clean).trim().to_string()
+                    })
+                    .collect();
+
+                if bookmarks.is_empty() {
+                    self.info_list = Some("No bookmarks to push".into_text()?);
+                    return Ok(());
+                }
+
+                let popup = crate::update::Popup::GitPushBookmark {
+                    bookmarks,
+                    change_id: change_id.to_string(),
+                    is_named_mode: true,
                 };
-                (
-                    Some("--named"),
-                    Some(format!("{}={}", bookmark_name, change_id)),
-                )
+                return self.open_popup(popup);
             }
             GitPushMode::Bookmark => {
-                let Some(bookmark_name) =
-                    get_input_from_editor(term, None, Some("Enter the bookmark to push"))?
-                else {
-                    return self.cancelled();
+                // Fetch bookmarks and open popup
+                let output = JjCommand::bookmark_list(self.global_args.clone()).run()?;
+                let bookmarks: Vec<String> = output
+                    .lines()
+                    .map(|s| s.trim())
+                    .filter(|s| !s.is_empty())
+                    .map(|s| {
+                        let clean = strip_ansi(s);
+                        clean.split(':').next().unwrap_or(&clean).trim().to_string()
+                    })
+                    .collect();
+
+                if bookmarks.is_empty() {
+                    self.info_list = Some("No bookmarks to push".into_text()?);
+                    return Ok(());
+                }
+
+                let popup = crate::update::Popup::GitPushBookmark {
+                    bookmarks,
+                    change_id: String::new(),
+                    is_named_mode: false,
                 };
-                (Some("-b"), Some(bookmark_name))
+                return self.open_popup(popup);
             }
         };
         let cmd = JjCommand::git_push(flag, value.as_deref(), self.global_args.clone());
