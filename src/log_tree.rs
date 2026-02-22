@@ -132,6 +132,10 @@ pub trait LogTreeNode {
     fn flat_log_idx(&self) -> usize;
     fn children(&self) -> Vec<&dyn LogTreeNode>;
     fn toggle_fold(&mut self, global_args: &GlobalArgs) -> Result<()>;
+    /// Get the line number for this node (only implemented for DiffHunkLine)
+    fn line_number(&self) -> Option<u32> {
+        None
+    }
 }
 
 pub type TreePosition = Vec<usize>;
@@ -765,6 +769,20 @@ impl DiffHunk {
             Ok(())
         };
 
+        // Helper function to parse line number from diff output
+        fn parse_line_number(line: &str) -> Option<u32> {
+            // Parse line number from format like "  OLD  NEW: content" or "    NEW: content" or "  OLD   :"
+            // We want the NEW (green) line number
+            let regex = regex::Regex::new(r"^\s*(\d+)?\s+(\d+)?:").ok()?;
+            let captures = regex.captures(line)?;
+
+            // Try green line number first (group 2), fall back to red (group 1)
+            captures
+                .get(2)
+                .or_else(|| captures.get(1))
+                .and_then(|m| m.as_str().parse().ok())
+        }
+
         for line in output_lines {
             let clean_line = strip_ansi(line);
 
@@ -772,9 +790,12 @@ impl DiffHunk {
                 push_diff_hunk(diff_hunk_lines)?;
                 diff_hunk_lines = Vec::new();
             } else {
+                // Parse line number from the diff line format (use clean_line without ANSI)
+                let line_num = parse_line_number(&clean_line);
                 diff_hunk_lines.push(DiffHunkLine::new(
                     line.to_string(),
                     graph_indent.to_string(),
+                    line_num,
                 ));
             }
         }
@@ -790,6 +811,7 @@ impl DiffHunk {
                 .push(DiffHunkLine::new(
                     "\x1b[35m~\x1b[0m".to_string(),
                     graph_indent.to_string(),
+                    None,
                 ));
         }
 
@@ -866,18 +888,20 @@ impl LogTreeNode for DiffHunk {
 }
 
 #[derive(Debug)]
-struct DiffHunkLine {
+pub struct DiffHunkLine {
     pretty_string: String,
     graph_indent: String,
     flat_log_idx: usize,
+    line_number: Option<u32>,
 }
 
 impl DiffHunkLine {
-    fn new(pretty_string: String, graph_indent: String) -> Self {
+    fn new(pretty_string: String, graph_indent: String, line_number: Option<u32>) -> Self {
         Self {
             pretty_string,
             graph_indent,
             flat_log_idx: 0,
+            line_number,
         }
     }
 }
@@ -922,6 +946,10 @@ impl LogTreeNode for DiffHunkLine {
 
     fn toggle_fold(&mut self, _global_args: &GlobalArgs) -> Result<()> {
         Ok(())
+    }
+
+    fn line_number(&self) -> Option<u32> {
+        self.line_number
     }
 }
 

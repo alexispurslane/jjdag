@@ -23,6 +23,26 @@ use ratatui::{
     widgets::ListState,
 };
 
+/// Simple debug logging to file
+fn debug_log(msg: &str) {
+    use std::fs::OpenOptions;
+    use std::io::Write;
+    use std::time::SystemTime;
+
+    let timestamp = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    if let Ok(mut file) = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("/tmp/jjdag.log")
+    {
+        let _ = writeln!(file, "[{}] {}", timestamp, msg);
+    }
+}
+
 const LOG_LIST_SCROLL_PADDING: usize = 0;
 
 #[derive(Default, Debug, PartialEq, Eq)]
@@ -70,6 +90,9 @@ pub struct Model {
     pub text_input: String,
     /// Cursor position in text input (byte index)
     pub text_cursor: usize,
+    /// Track last click for double-click detection
+    last_click_time: Option<std::time::Instant>,
+    last_click_pos: Option<(u16, u16)>,
 }
 
 #[derive(Debug)]
@@ -102,6 +125,8 @@ impl Model {
             popup_selection: 0,
             text_input: String::new(),
             text_cursor: 0,
+            last_click_time: None,
+            last_click_pos: None,
             display_repository: format_repository_for_display(&repository),
             global_args: GlobalArgs {
                 repository,
@@ -431,6 +456,11 @@ impl Model {
         None
     }
 
+    /// Returns true if there are pending command keys in a multi-key sequence
+    pub fn has_pending_command_keys(&self) -> bool {
+        !self.command_keys.is_empty()
+    }
+
     pub fn scroll_down_once(&mut self) {
         if self.log_selected() <= self.log_offset() + self.log_list_scroll_padding {
             self.select_next_node();
@@ -485,6 +515,29 @@ impl Model {
     }
 
     pub fn handle_mouse_click(&mut self, row: u16, column: u16) {
+        use std::time::{Duration, Instant};
+
+        const DOUBLE_CLICK_THRESHOLD: Duration = Duration::from_millis(300);
+
+        // Check for double-click
+        let is_double_click = if let Some(last_time) = self.last_click_time {
+            let elapsed = Instant::now().duration_since(last_time);
+            let pos_matches = self.last_click_pos == Some((row, column));
+            elapsed < DOUBLE_CLICK_THRESHOLD && pos_matches
+        } else {
+            false
+        };
+
+        // Update last click tracking
+        self.last_click_time = Some(Instant::now());
+        self.last_click_pos = Some((row, column));
+
+        // Handle double-click - treat like Enter
+        if is_double_click {
+            let _ = self.enter_pressed();
+            return;
+        }
+
         let Rect {
             x,
             y,
@@ -1345,6 +1398,130 @@ impl Model {
         };
         let cmd = JjCommand::edit(change_id, self.global_args.clone());
         self.queue_jj_command(cmd)
+    }
+
+    pub fn enter_pressed(&mut self) -> Result<()> {
+        let tree_pos = self.get_selected_tree_position();
+        debug_log(&format!(
+            "enter_pressed called, tree_pos.len() = {}",
+            tree_pos.len()
+        ));
+
+        // If on a commit (revision title), edit that revision
+        if tree_pos.len() == 1 {
+            debug_log("On commit, calling jj_edit");
+            return self.jj_edit();
+        }
+
+        // If on a diff line (tree_pos.len() == 4), get line number and parent file
+        let (file_path, line_num) = if tree_pos.len() == 4 {
+            debug_log("On diff line (len=4), getting line number");
+            // Parse line number first (requires &mut self)
+            let line_num = self.get_diff_line_number(&tree_pos);
+            debug_log(&format!("Got line_num: {:?}", line_num));
+            // Then get file path (requires &self)
+            let file_tree_pos: TreePosition = tree_pos[..2].to_vec();
+            let Some(path) = self.get_file_path(file_tree_pos) else {
+                debug_log("Failed to get file path");
+                return self.invalid_selection();
+            };
+            debug_log(&format!("Got file path: {}, line: {:?}", path, line_num));
+            (path.to_string(), line_num)
+        } else {
+            // On a file or hunk header - no specific line
+            let Some(path) = self.get_selected_file_path() else {
+                debug_log("Failed to get selected file path");
+                return self.invalid_selection();
+            };
+            debug_log(&format!("On file/hunk, path: {}", path));
+            (path.to_string(), None)
+        };
+
+        debug_log(&format!(
+            "Final: file_path={}, line_num={:?}",
+            file_path, line_num
+        ));
+
+        // Get the change_id for this file's revision
+        let Some(change_id) = self.get_selected_change_id() else {
+            return self.invalid_selection();
+        };
+
+        // Open the file using jj cat piped to $EDITOR
+        // For the working copy (@), we can open directly; otherwise use jj cat
+        let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vim".to_string());
+
+        // Parse editor command - handle cases like "code --wait" or "vim -u NONE"
+        let mut editor_parts = editor.split_whitespace();
+        let editor_bin = editor_parts.next().unwrap_or("vim");
+        let editor_args: Vec<&str> = editor_parts.collect();
+
+        // Build the file argument - include line number if available
+        let file_arg = if let Some(num) = line_num {
+            format!("{}:{}", file_path, num)
+        } else {
+            file_path.to_string()
+        };
+
+        if change_id == "@" || self.is_selected_working_copy() {
+            debug_log(&format!("Opening working copy file: {}", file_arg));
+            // Open working copy file directly - spawn and forget (non-blocking)
+            let full_path = std::path::Path::new(&self.global_args.repository).join(&file_arg);
+            std::process::Command::new(editor_bin)
+                .args(&editor_args)
+                .arg(&full_path)
+                .spawn()?;
+        } else {
+            // For historical revisions, use jj cat and pipe to editor
+            // Since many editors don't support piping directly, we'll use a tempfile approach
+            let temp_file = tempfile::NamedTempFile::with_suffix(
+                std::path::Path::new(&file_path)
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or(""),
+            )?;
+            let temp_path = temp_file.path().to_path_buf();
+
+            // Get file content at this revision
+            let output = std::process::Command::new("jj")
+                .args([
+                    "cat",
+                    "--color=never",
+                    "--repository",
+                    &self.global_args.repository,
+                    "-r",
+                    change_id,
+                    "--",
+                    &file_path,
+                ])
+                .output()?;
+
+            if !output.status.success() {
+                return Err(anyhow::anyhow!(
+                    "Failed to get file content: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                ));
+            }
+
+            std::fs::write(&temp_path, &output.stdout)?;
+
+            // Open the temp file in editor
+            debug_log(&format!("Opening temp file: {}", temp_path.display()));
+            std::process::Command::new(editor_bin)
+                .args(&editor_args)
+                .arg(&temp_path)
+                .spawn()?;
+        }
+
+        Ok(())
+    }
+
+    /// Get the line number from a diff hunk line at the given tree position.
+    /// Uses the LogTreeNode::line_number trait method.
+    fn get_diff_line_number(&mut self, tree_pos: &TreePosition) -> Option<u32> {
+        // Get the diff hunk line node and call line_number()
+        let node = self.jj_log.get_tree_node(tree_pos).ok()?;
+        node.line_number()
     }
 
     pub fn jj_evolog(&mut self, patch: bool, term: Term) -> Result<()> {

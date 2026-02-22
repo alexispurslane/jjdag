@@ -187,6 +187,7 @@ pub enum Message {
         destination: DuplicateDestination,
     },
     Edit,
+    EnterPressed,
     Evolog {
         patch: bool,
     },
@@ -524,8 +525,8 @@ fn handle_key(model: &mut Model, key: event::KeyEvent) -> Option<Message> {
         };
     }
 
-    // When a selection popup is active (not text input)
-    if model.current_popup.is_some() {
+    // When a selection popup is active (not text input) AND we're not in a command sequence
+    if model.current_popup.is_some() && !model.has_pending_command_keys() {
         return match key.code {
             KeyCode::Enter => Some(Message::PopupSelect),
             KeyCode::Esc => Some(Message::PopupCancel),
@@ -563,6 +564,7 @@ fn handle_key(model: &mut Model, key: event::KeyEvent) -> Option<Message> {
         KeyCode::Char('L') => Some(Message::SetRevset),
         KeyCode::Char('I') => Some(Message::ToggleIgnoreImmutable),
         KeyCode::Char('?') => Some(Message::ShowHelp),
+        KeyCode::Enter => Some(Message::EnterPressed),
         _ => model.handle_command_key(key.code),
     }
 }
@@ -654,6 +656,7 @@ fn handle_msg(term: Term, model: &mut Model, msg: Message) -> Result<Option<Mess
             destination,
         } => model.jj_duplicate(destination_type, destination)?,
         Message::Edit => model.jj_edit()?,
+        Message::EnterPressed => model.enter_pressed()?,
         Message::Evolog { patch } => model.jj_evolog(patch, term)?,
         Message::FileTrack => model.jj_file_track(term)?,
         Message::FileUntrack => model.jj_file_untrack()?,
