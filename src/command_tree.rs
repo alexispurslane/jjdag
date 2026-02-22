@@ -294,6 +294,12 @@ impl CommandTree {
             ),
             (
                 "Bookmark",
+                "Tug ancestor to current",
+                vec![KeyCode::Char('b'), KeyCode::Char('T')],
+                CommandTreeNode::new_action(Message::Tug),
+            ),
+            (
+                "Bookmark",
                 "Rename",
                 vec![KeyCode::Char('b'), KeyCode::Char('r')],
                 CommandTreeNode::new_action(Message::BookmarkRename),

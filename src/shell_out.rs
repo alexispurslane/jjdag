@@ -412,6 +412,18 @@ impl JjCommand {
         Self::_new(&args, global_args, Some(term), ReturnOutput::Stderr)
     }
 
+    pub fn tug(global_args: GlobalArgs) -> Self {
+        let args = [
+            "bookmark",
+            "move",
+            "--from",
+            "heads(::@- & bookmarks())",
+            "--to",
+            "@",
+        ];
+        Self::_new(&args, global_args, None, ReturnOutput::Stderr)
+    }
+
     pub fn edit(change_id: &str, global_args: GlobalArgs) -> Self {
         let args = ["edit", change_id];
         Self::_new(&args, global_args, None, ReturnOutput::Stderr)

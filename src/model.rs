@@ -1970,6 +1970,11 @@ impl Model {
         self.queue_jj_command(cmd)
     }
 
+    pub fn jj_tug(&mut self) -> Result<()> {
+        let cmd = JjCommand::tug(self.global_args.clone());
+        self.queue_jj_command(cmd)
+    }
+
     pub fn jj_squash(&mut self, mode: SquashMode, term: Term) -> Result<()> {
         let cmd = match mode {
             SquashMode::Default => {
