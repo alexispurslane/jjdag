@@ -46,7 +46,7 @@ pub enum Popup {
 }
 
 /// Action to take when text prompt is submitted
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum TextPromptAction {
     BookmarkRenameSubmit {
         old_name: String,
@@ -65,7 +65,7 @@ pub enum TextPromptAction {
 }
 
 /// Location where text input is currently active
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum TextInputLocation {
     /// No text input active
     None,
@@ -141,30 +141,10 @@ pub enum Message {
     BookmarkUntrack,
     /// Start editing a bookmark name inline for the selected commit
     BookmarkEditStart,
-    /// Add a character to the bookmark name being edited
-    BookmarkEditChar {
-        ch: char,
-    },
-    /// Remove the last character from the bookmark name
-    BookmarkEditBackspace,
-    /// Submit the bookmark creation
-    BookmarkEditSubmit,
-    /// Cancel bookmark editing
-    BookmarkEditCancel,
     /// Start editing description inline for the selected commit
     DescriptionEditStart {
         mode: DescribeMode,
     },
-    /// Add a character to the description being edited
-    DescriptionEditChar {
-        ch: char,
-    },
-    /// Remove the last character from the description
-    DescriptionEditBackspace,
-    /// Submit the description edit
-    DescriptionEditSubmit,
-    /// Cancel description editing
-    DescriptionEditCancel,
     /// Add a character to the popup filter
     PopupFilterChar {
         ch: char,
@@ -274,24 +254,6 @@ pub enum Message {
     SelectPrevNode,
     SelectPrevSiblingNode,
     SetRevset,
-    /// Submit the revset edit
-    SetRevsetSubmit,
-    /// Cancel the revset edit
-    SetRevsetCancel,
-    /// Backspace in revset edit
-    SetRevsetBackspace,
-    /// Move cursor left in revset edit
-    SetRevsetMoveLeft,
-    /// Move cursor right in revset edit
-    SetRevsetMoveRight,
-    /// Move cursor to start in revset edit
-    SetRevsetMoveHome,
-    /// Move cursor to end in revset edit
-    SetRevsetMoveEnd,
-    /// Add character to revset edit
-    SetRevsetChar {
-        ch: char,
-    },
     ShowHelp,
     Sign {
         action: SignAction,
@@ -526,80 +488,38 @@ fn handle_event(model: &mut Model) -> Result<Option<Message>> {
 
 fn handle_key(model: &mut Model, key: event::KeyEvent) -> Option<Message> {
     // When text input is active (single source of truth)
-    match &model.text_input_location {
-        // Popup text prompts handle text input
-        crate::update::TextInputLocation::Popup { .. } => {
-            return match key.code {
-                KeyCode::Enter => Some(Message::TextInputSubmit),
-                KeyCode::Esc => Some(Message::TextInputCancel),
-                KeyCode::Backspace => Some(Message::TextInputBackspace),
-                KeyCode::Delete => Some(Message::TextInputDelete),
-                KeyCode::Left => Some(Message::TextInputMoveLeft),
-                KeyCode::Right => Some(Message::TextInputMoveRight),
-                KeyCode::Home => Some(Message::TextInputMoveHome),
-                KeyCode::End => Some(Message::TextInputMoveEnd),
-                KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    Some(Message::TextInputMoveHome)
-                }
-                KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    Some(Message::TextInputMoveEnd)
-                }
-                KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    Some(Message::TextInputDelete)
-                }
-                KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    Some(Message::TextInputBackspace)
-                }
-                KeyCode::Char(c) => Some(Message::TextInputChar { ch: c }),
-                _ => None,
-            };
-        }
-        // Revset editing mode
-        crate::update::TextInputLocation::Revset { .. } => {
-            return match key.code {
-                KeyCode::Enter => Some(Message::SetRevsetSubmit),
-                KeyCode::Esc => Some(Message::SetRevsetCancel),
-                KeyCode::Backspace => Some(Message::SetRevsetBackspace),
-                KeyCode::Left => Some(Message::SetRevsetMoveLeft),
-                KeyCode::Right => Some(Message::SetRevsetMoveRight),
-                KeyCode::Home => Some(Message::SetRevsetMoveHome),
-                KeyCode::End => Some(Message::SetRevsetMoveEnd),
-                KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    Some(Message::SetRevsetMoveHome)
-                }
-                KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    Some(Message::SetRevsetMoveEnd)
-                }
-                KeyCode::Char(c) => Some(Message::SetRevsetChar { ch: c }),
-                _ => None,
-            };
-        }
-        // Bookmark editing mode
-        crate::update::TextInputLocation::Bookmark { .. } => {
-            return match key.code {
-                KeyCode::Enter => Some(Message::BookmarkEditSubmit),
-                KeyCode::Esc => Some(Message::BookmarkEditCancel),
-                KeyCode::Backspace => Some(Message::BookmarkEditBackspace),
-                KeyCode::Left => Some(Message::TextInputMoveLeft),
-                KeyCode::Right => Some(Message::TextInputMoveRight),
-                KeyCode::Char(c) => Some(Message::BookmarkEditChar { ch: c }),
-                _ => None,
-            };
-        }
-        // Description editing mode
-        crate::update::TextInputLocation::Description { .. } => {
-            return match key.code {
-                KeyCode::Enter => Some(Message::DescriptionEditSubmit),
-                KeyCode::Esc => Some(Message::DescriptionEditCancel),
-                KeyCode::Backspace => Some(Message::DescriptionEditBackspace),
-                KeyCode::Left => Some(Message::TextInputMoveLeft),
-                KeyCode::Right => Some(Message::TextInputMoveRight),
-                KeyCode::Char(c) => Some(Message::DescriptionEditChar { ch: c }),
-                _ => None,
-            };
-        }
-        // No text input active
-        crate::update::TextInputLocation::None => {}
+    // When text input is active, dispatch to unified TextInput messages
+    if model.text_input_location != crate::update::TextInputLocation::None {
+        return match key.code {
+            KeyCode::Enter => Some(Message::TextInputSubmit),
+            KeyCode::Esc => Some(Message::TextInputCancel),
+            KeyCode::Backspace => Some(Message::TextInputBackspace),
+            KeyCode::Delete => Some(Message::TextInputDelete),
+            KeyCode::Left => Some(Message::TextInputMoveLeft),
+            KeyCode::Right => Some(Message::TextInputMoveRight),
+            KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                Some(Message::TextInputMoveLeft)
+            }
+            KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                Some(Message::TextInputMoveRight)
+            }
+            KeyCode::Home => Some(Message::TextInputMoveHome),
+            KeyCode::End => Some(Message::TextInputMoveEnd),
+            KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                Some(Message::TextInputMoveHome)
+            }
+            KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                Some(Message::TextInputMoveEnd)
+            }
+            KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                Some(Message::TextInputDelete)
+            }
+            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                Some(Message::TextInputBackspace)
+            }
+            KeyCode::Char(c) => Some(Message::TextInputChar { ch: c }),
+            _ => None,
+        };
     }
 
     // When a selection popup is active (not text input)
@@ -620,6 +540,12 @@ fn handle_key(model: &mut Model, key: event::KeyEvent) -> Option<Message> {
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => Some(Message::Quit),
         KeyCode::Down | KeyCode::Char('j') => Some(Message::SelectNextNode),
         KeyCode::Up | KeyCode::Char('k') => Some(Message::SelectPrevNode),
+        KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            Some(Message::SelectNextNode)
+        }
+        KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            Some(Message::SelectPrevNode)
+        }
         KeyCode::PageDown => Some(Message::ScrollDownPage),
         KeyCode::PageUp => Some(Message::ScrollUpPage),
         KeyCode::Left | KeyCode::Char('h') => Some(Message::SelectPrevSiblingNode),
@@ -662,14 +588,7 @@ fn handle_msg(term: Term, model: &mut Model, msg: Message) -> Result<Option<Mess
         Message::Quit => model.quit(),
         Message::Refresh => model.refresh()?,
         Message::SetRevset => model.set_revset(term)?,
-        Message::SetRevsetSubmit => model.revset_edit_submit()?,
-        Message::SetRevsetCancel => model.revset_edit_cancel(),
-        Message::SetRevsetChar { ch } => model.revset_edit_char(ch),
-        Message::SetRevsetBackspace => model.revset_edit_backspace(),
-        Message::SetRevsetMoveLeft => model.text_input_move_left(),
-        Message::SetRevsetMoveRight => model.text_input_move_right(),
-        Message::SetRevsetMoveHome => model.text_input_move_home(),
-        Message::SetRevsetMoveEnd => model.text_input_move_end(),
+
         Message::ShowHelp => model.show_help(),
         Message::ToggleIgnoreImmutable => model.toggle_ignore_immutable(),
 
@@ -707,16 +626,8 @@ fn handle_msg(term: Term, model: &mut Model, msg: Message) -> Result<Option<Mess
         Message::BookmarkUntrack => model.jj_bookmark_untrack(term)?,
         // Bookmark editing
         Message::BookmarkEditStart => model.bookmark_edit_start()?,
-        Message::BookmarkEditChar { ch } => model.bookmark_edit_char(ch),
-        Message::BookmarkEditBackspace => model.bookmark_edit_backspace(),
-        Message::BookmarkEditSubmit => model.bookmark_edit_submit(term)?,
-        Message::BookmarkEditCancel => model.bookmark_edit_cancel(),
         // Description editing
         Message::DescriptionEditStart { mode } => model.description_edit_start(mode)?,
-        Message::DescriptionEditChar { ch } => model.text_input_char(ch),
-        Message::DescriptionEditBackspace => model.text_input_backspace(),
-        Message::DescriptionEditSubmit => model.description_edit_submit(term)?,
-        Message::DescriptionEditCancel => model.text_input_cancel(),
         // Popup messages
         Message::PopupFilterChar { ch } => model.popup_filter_char(ch),
         Message::PopupFilterBackspace => model.popup_filter_backspace(),

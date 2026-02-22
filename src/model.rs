@@ -380,32 +380,6 @@ impl Model {
         Ok(())
     }
 
-    /// Add character to revset input
-    pub fn revset_edit_char(&mut self, ch: char) {
-        self.text_input.insert(self.text_cursor, ch);
-        self.text_cursor += ch.len_utf8();
-    }
-
-    /// Backspace in revset input
-    pub fn revset_edit_backspace(&mut self) {
-        if self.text_cursor > 0 {
-            let prev_char_len = self.text_input[..self.text_cursor]
-                .chars()
-                .last()
-                .map(|c| c.len_utf8())
-                .unwrap_or(1);
-            self.text_cursor -= prev_char_len;
-            self.text_input.remove(self.text_cursor);
-        }
-    }
-
-    /// Cancel revset editing
-    pub fn revset_edit_cancel(&mut self) {
-        self.text_input_location = crate::update::TextInputLocation::None;
-        self.text_input.clear();
-        self.text_cursor = 0;
-    }
-
     /// Submit new revset
     pub fn revset_edit_submit(&mut self) -> Result<()> {
         let new_revset = std::mem::take(&mut self.text_input);
@@ -630,25 +604,6 @@ impl Model {
         self.text_cursor = 0;
         self.text_input_location = crate::update::TextInputLocation::Bookmark { change_id };
         Ok(())
-    }
-
-    /// Add a character to the bookmark name being edited
-    pub fn bookmark_edit_char(&mut self, ch: char) {
-        self.text_input.insert(self.text_cursor, ch);
-        self.text_cursor += ch.len_utf8();
-    }
-
-    /// Remove the last character from the bookmark name
-    pub fn bookmark_edit_backspace(&mut self) {
-        if self.text_cursor > 0 {
-            let prev_char_len = self.text_input[..self.text_cursor]
-                .chars()
-                .last()
-                .map(|c| c.len_utf8())
-                .unwrap_or(1);
-            self.text_cursor -= prev_char_len;
-            self.text_input.remove(self.text_cursor);
-        }
     }
 
     /// Cancel bookmark editing
@@ -1002,31 +957,37 @@ impl Model {
         self.text_cursor = 0;
     }
 
-    /// Submit text input and execute the associated action
+    /// Submit text input and execute the associated action based on location
     pub fn text_input_submit(&mut self, _term: Term) -> Result<()> {
-        let action = match &self.text_input_location {
-            crate::update::TextInputLocation::Popup { action, .. } => action.clone(),
-            _ => return Ok(()),
-        };
+        match &self.text_input_location {
+            crate::update::TextInputLocation::Popup { action, .. } => {
+                let action = action.clone();
+                let text = std::mem::take(&mut self.text_input);
+                self.text_cursor = 0;
+                self.text_input_location = crate::update::TextInputLocation::None;
 
-        let text = std::mem::take(&mut self.text_input);
-        self.text_cursor = 0;
-        self.text_input_location = crate::update::TextInputLocation::None;
-
-        match action {
-            TextPromptAction::BookmarkRenameSubmit { old_name } => {
-                self.bookmark_rename_submit(old_name, text)
+                match action {
+                    TextPromptAction::BookmarkRenameSubmit { old_name } => {
+                        self.bookmark_rename_submit(old_name, text)
+                    }
+                    TextPromptAction::MetaeditSetAuthor { change_id } => {
+                        self.metaedit_set_author(change_id, text)
+                    }
+                    TextPromptAction::MetaeditSetTimestamp { change_id } => {
+                        self.metaedit_set_timestamp(change_id, text)
+                    }
+                    TextPromptAction::ParallelizeRevset => self.parallelize_with_revset(text),
+                    TextPromptAction::NextPrev { direction, mode } => {
+                        self.next_prev_with_offset(direction, mode, text)
+                    }
+                }
             }
-            TextPromptAction::MetaeditSetAuthor { change_id } => {
-                self.metaedit_set_author(change_id, text)
+            crate::update::TextInputLocation::Revset { .. } => self.revset_edit_submit(),
+            crate::update::TextInputLocation::Bookmark { .. } => self.bookmark_edit_submit(_term),
+            crate::update::TextInputLocation::Description { .. } => {
+                self.description_edit_submit(_term)
             }
-            TextPromptAction::MetaeditSetTimestamp { change_id } => {
-                self.metaedit_set_timestamp(change_id, text)
-            }
-            TextPromptAction::ParallelizeRevset => self.parallelize_with_revset(text),
-            TextPromptAction::NextPrev { direction, mode } => {
-                self.next_prev_with_offset(direction, mode, text)
-            }
+            _ => Ok(()),
         }
     }
 
