@@ -330,8 +330,8 @@ impl JjCommand {
         Self::_new(&args, global_args, None, ReturnOutput::Stderr)
     }
 
-    pub fn split(change_id: &str, global_args: GlobalArgs, term: Term) -> Self {
-        let args = ["split", "-r", change_id];
+    pub fn split(change_id: &str, message: &str, global_args: GlobalArgs, term: Term) -> Self {
+        let args = ["split", "-r", change_id, "-m", message];
         Self::_new(&args, global_args, Some(term), ReturnOutput::Stderr)
     }
 
