@@ -242,6 +242,12 @@ impl CommandTree {
             ),
             (
                 "Bookmark",
+                "New revision and tug bookmark",
+                vec![KeyCode::Char('b'), KeyCode::Char('n')],
+                CommandTreeNode::new_action(Message::NewOnBranch),
+            ),
+            (
+                "Bookmark",
                 "Move",
                 vec![KeyCode::Char('b'), KeyCode::Char('m')],
                 CommandTreeNode::new_children(),

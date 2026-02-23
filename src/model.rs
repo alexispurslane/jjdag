@@ -1866,6 +1866,15 @@ impl Model {
         self.queue_jj_commands(vec![fetch_cmd, new_cmd])
     }
 
+    pub fn jj_new_on_branch(&mut self) -> Result<()> {
+        let Some(change_id) = self.get_selected_change_id() else {
+            return self.invalid_selection();
+        };
+        let new_cmd = JjCommand::new(change_id, &[], self.global_args.clone());
+        let tug_cmd = JjCommand::tug(self.global_args.clone());
+        self.queue_jj_commands(vec![new_cmd, tug_cmd])
+    }
+
     pub fn jj_next_prev(
         &mut self,
         direction: NextPrevDirection,

@@ -213,6 +213,7 @@ pub enum Message {
         mode: NewMode,
     },
     NewAfterTrunkSync,
+    NewOnBranch,
     RebaseSelectedBranchOntoTrunk,
     RebaseSelectedBranchOntoTrunkSync,
     NextPrev {
@@ -666,6 +667,7 @@ fn handle_msg(term: Term, model: &mut Model, msg: Message) -> Result<Option<Mess
         Message::Metaedit { action } => model.jj_metaedit(action, term)?,
         Message::New { mode } => model.jj_new(mode)?,
         Message::NewAfterTrunkSync => model.jj_new_after_trunk_sync()?,
+        Message::NewOnBranch => model.jj_new_on_branch()?,
         Message::RebaseSelectedBranchOntoTrunk => model.jj_rebase_selected_branch_onto_trunk()?,
         Message::RebaseSelectedBranchOntoTrunkSync => {
             model.jj_rebase_selected_branch_onto_trunk_sync()?
