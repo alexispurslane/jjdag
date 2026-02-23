@@ -620,6 +620,36 @@ impl JjCommand {
         Self::_new(&args, global_args, None, ReturnOutput::Stderr)
     }
 
+    pub fn workspace_list(global_args: GlobalArgs) -> Self {
+        let args = ["workspace", "list"];
+        Self::_new(&args, global_args, None, ReturnOutput::Stdout)
+    }
+
+    pub fn workspace_root(global_args: GlobalArgs) -> Self {
+        let args = ["workspace", "root"];
+        Self::_new(&args, global_args, None, ReturnOutput::Stdout)
+    }
+
+    pub fn workspace_forget(name: &str, global_args: GlobalArgs) -> Self {
+        let args = ["workspace", "forget", name];
+        Self::_new(&args, global_args, None, ReturnOutput::Stderr)
+    }
+
+    pub fn workspace_rename(new_name: &str, global_args: GlobalArgs) -> Self {
+        let args = ["workspace", "rename", new_name];
+        Self::_new(&args, global_args, None, ReturnOutput::Stderr)
+    }
+
+    pub fn workspace_update_stale(global_args: GlobalArgs) -> Self {
+        let args = ["workspace", "update-stale", "--all"];
+        Self::_new(&args, global_args, None, ReturnOutput::Stderr)
+    }
+
+    pub fn workspace_add(path: &str, global_args: GlobalArgs, term: Term) -> Self {
+        let args = ["workspace", "add", path];
+        Self::_new_skip_sync(&args, global_args, Some(term), ReturnOutput::Stderr)
+    }
+
     pub fn ensure_valid_repo(repository: &str) -> Result<String, JjCommandError> {
         let args = [
             "--repository",
@@ -683,7 +713,58 @@ impl std::fmt::Display for JjCommandError {
 
 impl std::error::Error for JjCommandError {}
 
-#[derive(Debug)]
+/// Parse the workspace_store/index file to find a workspace's path.
+/// The file uses a simple protobuf-like format where each entry is:
+///   0a <total_len> 0a <name_len> <name> 12 <path_len> <path>
+/// Returns None if workspace not found or file cannot be read.
+pub fn get_workspace_path(repo_root: &str, workspace_name: &str) -> Option<String> {
+    let index_path = std::path::Path::new(repo_root).join(".jj/repo/workspace_store/index");
+    let contents = std::fs::read(index_path).ok()?;
+
+    let mut i = 0;
+    while i < contents.len() {
+        // Each entry starts with 0a (field 1, wire type 2) followed by total length
+        if contents.get(i)? != &0x0a {
+            break;
+        }
+        i += 1;
+
+        // Read total entry length (varint, but for reasonable sizes it's 1 byte)
+        let entry_len = *contents.get(i)? as usize;
+        i += 1;
+        let entry_end = i + entry_len;
+
+        // Parse name field: 0a <len> <bytes>
+        if contents.get(i)? != &0x0a {
+            break;
+        }
+        i += 1;
+        let name_len = *contents.get(i)? as usize;
+        i += 1;
+        let name_bytes = contents.get(i..i + name_len)?;
+        i += name_len;
+        let name = String::from_utf8_lossy(name_bytes);
+
+        // Parse path field: 12 <len> <bytes>
+        if contents.get(i)? != &0x12 {
+            break;
+        }
+        i += 1;
+        let path_len = *contents.get(i)? as usize;
+        i += 1;
+        let path_bytes = contents.get(i..i + path_len)?;
+
+        if name == workspace_name {
+            return Some(String::from_utf8_lossy(path_bytes).to_string());
+        }
+
+        // Skip to next entry (in case we had padding or miscalculated)
+        i = entry_end;
+    }
+
+    None
+}
+
 struct JjCommandOutput {
     stdout: String,
     stderr: String,

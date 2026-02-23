@@ -102,10 +102,6 @@ inputs.jjdag.url = "github:anthrofract/jjdag";
 - **`op abandon`** - Discard old operation history
 - **`op integrate`** - Integrate orphaned operations
 
-### 6. **Conflict Resolution**
-- **`resolve`** - Launch external merge tool for conflicted files
-- Currently only has `next/prev --conflict` to navigate to conflicts, but no resolution UI
-
 ### 7. **Tag Management** (`jj tag`)
 - **`tag list`** - List tags and their targets
 - **`tag set`** - Create/update tags

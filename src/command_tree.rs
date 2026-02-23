@@ -1755,6 +1755,48 @@ impl CommandTree {
                 vec![KeyCode::Char('u'), KeyCode::Char('r')],
                 CommandTreeNode::new_action(Message::Redo),
             ),
+            (
+                "Commands",
+                "Workspace",
+                vec![KeyCode::Char('w')],
+                CommandTreeNode::new_children(),
+            ),
+            (
+                "Workspace",
+                "Add",
+                vec![KeyCode::Char('w'), KeyCode::Char('a')],
+                CommandTreeNode::new_action(Message::WorkspaceAdd),
+            ),
+            (
+                "Workspace",
+                "Forget",
+                vec![KeyCode::Char('w'), KeyCode::Char('f')],
+                CommandTreeNode::new_action(Message::WorkspaceForget),
+            ),
+            (
+                "Workspace",
+                "List",
+                vec![KeyCode::Char('w'), KeyCode::Char('l')],
+                CommandTreeNode::new_action(Message::WorkspaceList),
+            ),
+            (
+                "Workspace",
+                "Rename",
+                vec![KeyCode::Char('w'), KeyCode::Char('n')],
+                CommandTreeNode::new_action(Message::WorkspaceRename),
+            ),
+            (
+                "Workspace",
+                "Root",
+                vec![KeyCode::Char('w'), KeyCode::Char('r')],
+                CommandTreeNode::new_action(Message::WorkspaceRoot),
+            ),
+            (
+                "Workspace",
+                "UpdateStale",
+                vec![KeyCode::Char('w'), KeyCode::Char('s')],
+                CommandTreeNode::new_action(Message::WorkspaceUpdateStale),
+            ),
         ];
 
         let mut tree = Self(CommandTreeNode::new_children());

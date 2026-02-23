@@ -928,6 +928,15 @@ impl Model {
                     self.queue_jj_command(cmd)
                 }
             }
+            crate::update::Popup::WorkspaceForget { .. } => {
+                let cmd = JjCommand::workspace_forget(&selected, self.global_args.clone());
+                self.queue_jj_command(cmd)
+            }
+            crate::update::Popup::WorkspaceUpdateStale { .. } => {
+                // Run with --all flag to update all stale workspaces
+                let cmd = JjCommand::workspace_update_stale(self.global_args.clone());
+                self.queue_jj_command(cmd)
+            }
         }
     }
 
@@ -1033,6 +1042,8 @@ impl Model {
                     TextPromptAction::NextPrev { direction, mode } => {
                         self.next_prev_with_offset(direction, mode, text)
                     }
+                    TextPromptAction::WorkspaceAdd => self.jj_workspace_add(&text, _term),
+                    TextPromptAction::WorkspaceRenameSubmit => self.workspace_rename_submit(text),
                 }
             }
             crate::update::TextInputLocation::Revset { .. } => self.revset_edit_submit(),
@@ -2338,6 +2349,101 @@ impl Model {
                 )
             }
         };
+        self.queue_jj_command(cmd)
+    }
+
+    pub fn jj_workspace_list(&mut self) -> Result<()> {
+        let cmd = JjCommand::workspace_list(self.global_args.clone());
+        self.queue_jj_command(cmd)
+    }
+
+    pub fn jj_workspace_root(&mut self) -> Result<()> {
+        let cmd = JjCommand::workspace_root(self.global_args.clone());
+        self.queue_jj_command(cmd)
+    }
+
+    pub fn workspace_add_start(&mut self) -> Result<()> {
+        // Get parent directory of current repository to prefill
+        let repo_path = std::path::Path::new(&self.global_args.repository);
+        let parent_path = repo_path
+            .parent()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
+
+        self.text_input = parent_path;
+        self.text_cursor = self.text_input.len();
+        self.text_input_location = crate::update::TextInputLocation::Popup {
+            prompt: "Enter Workspace Path",
+            placeholder: "/path/to/new-workspace",
+            action: crate::update::TextPromptAction::WorkspaceAdd,
+        };
+        Ok(())
+    }
+
+    pub fn jj_workspace_add(&mut self, path: &str, term: Term) -> Result<()> {
+        let cmd = JjCommand::workspace_add(path, self.global_args.clone(), term);
+        self.queue_jj_command(cmd)
+    }
+
+    pub fn jj_workspace_forget(&mut self) -> Result<()> {
+        // Fetch workspaces and open popup
+        let output = JjCommand::workspace_list(self.global_args.clone()).run()?;
+        let workspaces: Vec<String> = output
+            .lines()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(|s| {
+                // Parse "workspace-name: /path/to/workspace" format
+                // Split by colon and take the first part (workspace name)
+                s.split(':').next().unwrap_or(s).trim().to_string()
+            })
+            .collect();
+
+        if workspaces.is_empty() {
+            self.info_list = Some("No workspaces to forget".into_text()?);
+            return Ok(());
+        }
+
+        let popup = crate::update::Popup::WorkspaceForget { workspaces };
+        self.open_popup(popup)
+    }
+
+    pub fn jj_workspace_update_stale_start(&mut self) -> Result<()> {
+        // Fetch workspaces and open popup
+        let output = JjCommand::workspace_list(self.global_args.clone()).run()?;
+        let workspaces: Vec<String> = output
+            .lines()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(|s| {
+                // Parse "workspace-name: /path/to/workspace" format
+                // Split by colon and take the first part (workspace name)
+                s.split(':').next().unwrap_or(s).trim().to_string()
+            })
+            .collect();
+
+        if workspaces.is_empty() {
+            self.info_list = Some("No workspaces to update".into_text()?);
+            return Ok(());
+        }
+
+        let popup = crate::update::Popup::WorkspaceUpdateStale { workspaces };
+        self.open_popup(popup)
+    }
+
+    pub fn workspace_rename_current_start(&mut self) -> Result<()> {
+        self.text_input.clear();
+        self.text_cursor = 0;
+        self.text_input_location = crate::update::TextInputLocation::Popup {
+            prompt: "Enter New Workspace Name",
+            placeholder: "new-workspace-name",
+            action: crate::update::TextPromptAction::WorkspaceRenameSubmit,
+        };
+        Ok(())
+    }
+
+    fn workspace_rename_submit(&mut self, new_name: String) -> Result<()> {
+        let cmd = JjCommand::workspace_rename(&new_name, self.global_args.clone());
         self.queue_jj_command(cmd)
     }
 

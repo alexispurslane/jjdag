@@ -43,6 +43,12 @@ pub enum Popup {
         change_id: String,
         is_named_mode: bool,
     },
+    WorkspaceForget {
+        workspaces: Vec<String>,
+    },
+    WorkspaceUpdateStale {
+        workspaces: Vec<String>,
+    },
 }
 
 /// Action to take when text prompt is submitted
@@ -62,6 +68,8 @@ pub enum TextPromptAction {
         direction: NextPrevDirection,
         mode: NextPrevMode,
     },
+    WorkspaceAdd,
+    WorkspaceRenameSubmit,
 }
 
 /// Location where text input is currently active
@@ -100,6 +108,8 @@ impl Popup {
             Popup::GitFetchRemote { .. } => "Select Remote",
             Popup::GitFetchRemoteBranches { .. } => "Select Branch to Fetch",
             Popup::GitPushBookmark { .. } => "Select Bookmark to Push",
+            Popup::WorkspaceForget { .. } => "Forget Workspace",
+            Popup::WorkspaceUpdateStale { .. } => "Update Stale Workspace",
         }
     }
 
@@ -116,6 +126,8 @@ impl Popup {
             Popup::GitFetchRemote { remotes, .. } => remotes,
             Popup::GitFetchRemoteBranches { branches, .. } => branches,
             Popup::GitPushBookmark { bookmarks, .. } => bookmarks,
+            Popup::WorkspaceForget { workspaces } => workspaces,
+            Popup::WorkspaceUpdateStale { workspaces } => workspaces,
         }
     }
 }
@@ -282,6 +294,12 @@ pub enum Message {
     View {
         mode: ViewMode,
     },
+    WorkspaceAdd,
+    WorkspaceForget,
+    WorkspaceList,
+    WorkspaceRename,
+    WorkspaceRoot,
+    WorkspaceUpdateStale,
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]
@@ -553,8 +571,10 @@ fn handle_key(model: &mut Model, key: event::KeyEvent) -> Option<Message> {
     match key.code {
         KeyCode::Char('q') => Some(Message::Quit),
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => Some(Message::Quit),
-        KeyCode::Down | KeyCode::Char('j') => Some(Message::SelectNextNode),
-        KeyCode::Up | KeyCode::Char('k') => Some(Message::SelectPrevNode),
+        KeyCode::Down => Some(Message::SelectNextNode),
+        KeyCode::Char('j') if !model.has_pending_command_keys() => Some(Message::SelectNextNode),
+        KeyCode::Up => Some(Message::SelectPrevNode),
+        KeyCode::Char('k') if !model.has_pending_command_keys() => Some(Message::SelectPrevNode),
         KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             Some(Message::SelectNextNode)
         }
@@ -563,8 +583,14 @@ fn handle_key(model: &mut Model, key: event::KeyEvent) -> Option<Message> {
         }
         KeyCode::PageDown => Some(Message::ScrollDownPage),
         KeyCode::PageUp => Some(Message::ScrollUpPage),
-        KeyCode::Left | KeyCode::Char('h') => Some(Message::SelectPrevSiblingNode),
-        KeyCode::Right | KeyCode::Char('l') => Some(Message::SelectNextSiblingNode),
+        KeyCode::Left => Some(Message::SelectPrevSiblingNode),
+        KeyCode::Char('h') if !model.has_pending_command_keys() => {
+            Some(Message::SelectPrevSiblingNode)
+        }
+        KeyCode::Right => Some(Message::SelectNextSiblingNode),
+        KeyCode::Char('l') if !model.has_pending_command_keys() => {
+            Some(Message::SelectNextSiblingNode)
+        }
         KeyCode::Char('K') => Some(Message::SelectParentNode),
         KeyCode::Char(' ') => Some(Message::Refresh),
         KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -712,6 +738,12 @@ fn handle_msg(term: Term, model: &mut Model, msg: Message) -> Result<Option<Mess
         Message::TugAndGitPush => model.jj_tug_and_git_push()?,
         Message::Undo => model.jj_undo()?,
         Message::View { mode } => model.jj_view(mode, term)?,
+        Message::WorkspaceAdd => model.workspace_add_start()?,
+        Message::WorkspaceForget => model.jj_workspace_forget()?,
+        Message::WorkspaceList => model.jj_workspace_list()?,
+        Message::WorkspaceRename => model.workspace_rename_current_start()?,
+        Message::WorkspaceRoot => model.jj_workspace_root()?,
+        Message::WorkspaceUpdateStale => model.jj_workspace_update_stale_start()?,
     };
 
     Ok(None)
