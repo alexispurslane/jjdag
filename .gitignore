@@ -1,6 +1,7 @@
 # Ignore everything by default
 *
 
+!reset_test_env.sh
 !.gitignore
 !Cargo.lock
 !Cargo.toml

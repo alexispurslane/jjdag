@@ -1797,6 +1797,54 @@ impl CommandTree {
                 vec![KeyCode::Char('w'), KeyCode::Char('s')],
                 CommandTreeNode::new_action(Message::WorkspaceUpdateStale),
             ),
+            (
+                "Commands",
+                "PowerWorkspace",
+                vec![KeyCode::Char('W')],
+                CommandTreeNode::new_children(),
+            ),
+            (
+                "PowerWorkspace",
+                "Add",
+                vec![KeyCode::Char('W'), KeyCode::Char('a')],
+                CommandTreeNode::new_action(Message::PowerWorkspaceAdd),
+            ),
+            (
+                "PowerWorkspace",
+                "Forget",
+                vec![KeyCode::Char('W'), KeyCode::Char('f')],
+                CommandTreeNode::new_action(Message::PowerWorkspaceForget),
+            ),
+            (
+                "PowerWorkspace",
+                "List",
+                vec![KeyCode::Char('W'), KeyCode::Char('l')],
+                CommandTreeNode::new_action(Message::PowerWorkspaceList),
+            ),
+            (
+                "PowerWorkspace",
+                "Rename",
+                vec![KeyCode::Char('W'), KeyCode::Char('n')],
+                CommandTreeNode::new_action(Message::PowerWorkspaceRename),
+            ),
+            (
+                "PowerWorkspace",
+                "Root",
+                vec![KeyCode::Char('W'), KeyCode::Char('r')],
+                CommandTreeNode::new_action(Message::PowerWorkspaceRoot),
+            ),
+            (
+                "PowerWorkspace",
+                "UpdateStale",
+                vec![KeyCode::Char('W'), KeyCode::Char('s')],
+                CommandTreeNode::new_action(Message::PowerWorkspaceUpdateStale),
+            ),
+            (
+                "PowerWorkspace",
+                "MoveTo",
+                vec![KeyCode::Char('W'), KeyCode::Char('m')],
+                CommandTreeNode::new_action(Message::PowerWorkspaceMoveTo),
+            ),
         ];
 
         let mut tree = Self(CommandTreeNode::new_children());

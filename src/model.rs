@@ -16,6 +16,7 @@ use crate::{
 };
 use ansi_to_tui::IntoText;
 use anyhow::Result;
+use anyhow::anyhow;
 use crossterm::event::KeyCode;
 use ratatui::{
     layout::Rect,
@@ -937,6 +938,34 @@ impl Model {
                 let cmd = JjCommand::workspace_update_stale(self.global_args.clone());
                 self.queue_jj_command(cmd)
             }
+            crate::update::Popup::PowerWorkspaceForget { .. } => {
+                self.jj_workspace_power_forget(&selected)
+            }
+            crate::update::Popup::PowerWorkspaceRename { .. } => {
+                self.power_workspace_rename_start_with_name(&selected)
+            }
+            crate::update::Popup::PowerWorkspaceRoot { .. } => {
+                self.power_workspace_root_show(&selected)
+            }
+            crate::update::Popup::PowerWorkspaceUpdateStale { .. } => {
+                self.jj_workspace_power_update_stale(&selected)
+            }
+            crate::update::Popup::PowerWorkspaceMoveTo { .. } => {
+                // Get workspace path and move to it
+                if let Some(path) =
+                    crate::shell_out::get_workspace_path(&self.global_args.repository, &selected)
+                {
+                    self.move_to_workspace(path)?;
+                    Ok(())
+                } else {
+                    self.info_list = Some(
+                        format!("Could not find path for workspace '{}'", selected)
+                            .into_text()
+                            .unwrap_or_default(),
+                    );
+                    Ok(())
+                }
+            }
         }
     }
 
@@ -1044,6 +1073,10 @@ impl Model {
                     }
                     TextPromptAction::WorkspaceAdd => self.jj_workspace_add(&text, _term),
                     TextPromptAction::WorkspaceRenameSubmit => self.workspace_rename_submit(text),
+                    TextPromptAction::PowerWorkspaceAdd => {
+                        self.jj_workspace_power_add(&text, _term)
+                    }
+                    TextPromptAction::PowerWorkspaceRename => self.jj_workspace_power_rename(&text),
                 }
             }
             crate::update::TextInputLocation::Revset { .. } => self.revset_edit_submit(),
@@ -2385,6 +2418,90 @@ impl Model {
         self.queue_jj_command(cmd)
     }
 
+    /// Start the power workspace add flow. Opens a text prompt for the new workspace name.
+    /// The actual scoop-up and workspace creation happens atomically when the user submits.
+    pub fn power_workspace_add_start(&mut self) -> Result<()> {
+        self.text_input.clear();
+        self.text_cursor = 0;
+        self.text_input_location = crate::update::TextInputLocation::Popup {
+            prompt: "Enter New Workspace Name",
+            placeholder: "new-workspace",
+            action: crate::update::TextPromptAction::PowerWorkspaceAdd,
+        };
+        Ok(())
+    }
+
+    /// Power workspace add: atomically performs scoop-up (if needed) and creates sibling workspace.
+    /// This is called when the user submits the workspace name from the text prompt.
+    pub fn jj_workspace_power_add(&mut self, new_workspace_name: &str, term: Term) -> Result<()> {
+        // Check current workspace count
+        let output = JjCommand::workspace_list(self.global_args.clone()).run()?;
+        let workspaces: Vec<String> = output
+            .lines()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.split(':').next().unwrap_or(s).trim().to_string())
+            .collect();
+
+        if workspaces.len() == 1 {
+            // Scoop-up: move everything into a subdirectory named after the current workspace
+            let current_workspace = &workspaces[0];
+            let repo_path = std::path::Path::new(&self.global_args.repository);
+
+            // Create subdirectory for current workspace
+            let workspace_dir = repo_path.join(current_workspace);
+            std::fs::create_dir(&workspace_dir)?;
+
+            // Move all contents (including hidden files) into the subdirectory
+            // Read entries first to avoid iterator invalidation
+            let entries: Vec<_> = std::fs::read_dir(repo_path)?
+                .filter_map(|e| e.ok())
+                .collect();
+
+            for entry in entries {
+                let file_name = entry.file_name();
+                let file_name_str = file_name.to_string_lossy();
+
+                // Skip the subdirectory we just created (would cause "Invalid argument" trying to move into itself)
+                if file_name_str == *current_workspace {
+                    continue;
+                }
+
+                let src = repo_path.join(&file_name);
+                let dest = workspace_dir.join(&file_name);
+                std::fs::rename(&src, &dest)?;
+            }
+
+            // Convert to strings BEFORE calling move_to_workspace
+            let workspace_dir_string = workspace_dir.to_string_lossy().to_string();
+            let current_ws_name = current_workspace.clone();
+
+            // Change into the subdirectory
+            std::env::set_current_dir(&workspace_dir)?;
+
+            // Update model paths and reinitialize
+            self.move_to_workspace(workspace_dir_string.clone())
+                .expect("Failed to move workspace");
+
+            // Update the workspace index to reflect the new path for the scooped workspace
+            let _ = crate::shell_out::update_workspace_path(
+                &self.global_args,
+                &current_ws_name,
+                &workspace_dir_string,
+            );
+
+            debug_log(&format!(
+                "New global repository location: {}",
+                self.global_args.repository
+            ));
+        }
+
+        // Create the new sibling workspace
+        let sibling_path = format!("../{}/", new_workspace_name);
+        let cmd = JjCommand::workspace_add(&sibling_path, self.global_args.clone(), term);
+        self.queue_jj_command(cmd)
+    }
+
     pub fn jj_workspace_forget(&mut self) -> Result<()> {
         // Fetch workspaces and open popup
         let output = JjCommand::workspace_list(self.global_args.clone()).run()?;
@@ -2445,6 +2562,352 @@ impl Model {
     fn workspace_rename_submit(&mut self, new_name: String) -> Result<()> {
         let cmd = JjCommand::workspace_rename(&new_name, self.global_args.clone());
         self.queue_jj_command(cmd)
+    }
+
+    // ===== Power Workspace Methods =====
+
+    /// Start power workspace forget flow - opens popup to select workspace
+    pub fn power_workspace_forget_start(&mut self) -> Result<()> {
+        let output = JjCommand::workspace_list(self.global_args.clone()).run()?;
+        let workspaces: Vec<String> = output
+            .lines()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.split(':').next().unwrap_or(s).trim().to_string())
+            .collect();
+
+        if workspaces.is_empty() {
+            self.info_list = Some("No workspaces to forget".into_text()?);
+            return Ok(());
+        }
+
+        let popup = crate::update::Popup::PowerWorkspaceForget { workspaces };
+        self.open_popup(popup)
+    }
+
+    /// Power workspace forget: forgets workspace, removes directory, and handles cleanup.
+    /// This runs synchronously to ensure atomicity of forget + cleanup operations.
+    fn jj_workspace_power_forget(&mut self, workspace_name: &str) -> Result<()> {
+        // Get workspace path before forgetting
+        let workspace_path =
+            crate::shell_out::get_workspace_path(&self.global_args.repository, workspace_name);
+
+        // Forget the workspace in jj (synchronous for atomicity)
+        let cmd = JjCommand::workspace_forget(workspace_name, self.global_args.clone());
+        match cmd.run() {
+            Ok(output) => {
+                // Show success output
+                self.info_list = Some(output.into_text()?);
+            }
+            Err(err) => {
+                // Show error and abort
+                self.info_list = Some(format!("Failed to forget workspace: {}", err).into_text()?);
+                return Ok(());
+            }
+        }
+
+        // Remove the workspace directory if we know its path
+        if let Some(path) = workspace_path {
+            let path_obj = std::path::Path::new(&path);
+            if path_obj.exists() && path_obj.is_dir() {
+                let _ = std::fs::remove_dir_all(&path);
+            }
+        }
+
+        // Check if we need cleanup (only default workspace remains)
+        let output = JjCommand::workspace_list(self.global_args.clone()).run()?;
+        let remaining: Vec<String> = output
+            .lines()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.split(':').next().unwrap_or(s).trim().to_string())
+            .collect();
+
+        if remaining.len() == 1 && remaining[0] == "default" {
+            // Restore to standard structure: move default contents up to parent
+            // When in scooped structure, we're inside default/ - move contents up
+            let current_path = std::path::Path::new(&self.global_args.repository);
+
+            if let Some(parent_path) = current_path.parent() {
+                // Move all contents from current directory up to parent
+                let entries: Vec<_> = std::fs::read_dir(&current_path)?
+                    .filter_map(|e| e.ok())
+                    .collect();
+
+                for entry in entries {
+                    let file_name = entry.file_name();
+                    let src = current_path.join(&file_name);
+                    let dest = parent_path.join(&file_name);
+                    let _ = std::fs::rename(&src, &dest);
+                }
+
+                // Change to parent directory first (can't remove dir while in it)
+                std::env::set_current_dir(parent_path)?;
+
+                // Remove the now-empty default directory
+                let _ = std::fs::remove_dir(&current_path);
+
+                // Update the model to reflect new location
+                self.move_to_workspace(parent_path.to_string_lossy().to_string())?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Start power workspace rename flow - opens popup to select workspace
+    pub fn power_workspace_rename_start(&mut self) -> Result<()> {
+        let output = JjCommand::workspace_list(self.global_args.clone()).run()?;
+        let workspaces: Vec<String> = output
+            .lines()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.split(':').next().unwrap_or(s).trim().to_string())
+            .filter(|s| *s != "default")
+            .collect();
+
+        if workspaces.is_empty() {
+            self.info_list = Some("No workspaces to rename".into_text()?);
+            return Ok(());
+        }
+
+        let popup = crate::update::Popup::PowerWorkspaceRename { workspaces };
+        self.open_popup(popup)
+    }
+
+    /// Set up text prompt for power workspace rename with selected workspace
+    fn power_workspace_rename_start_with_name(&mut self, workspace_name: &str) -> Result<()> {
+        self.saved_change_id = Some(workspace_name.to_string());
+        self.text_input = workspace_name.to_string();
+        self.text_cursor = self.text_input.len();
+        self.text_input_location = crate::update::TextInputLocation::Popup {
+            prompt: "Enter New Workspace Name",
+            placeholder: "new-name",
+            action: crate::update::TextPromptAction::PowerWorkspaceRename,
+        };
+        Ok(())
+    }
+
+    /// Power workspace rename: renames workspace and directory
+    /// Changes to the target workspace first, then renames
+    fn jj_workspace_power_rename(&mut self, new_name: &str) -> Result<()> {
+        let old_name = self.saved_change_id.take().unwrap_or_default();
+
+        // Get the workspace path
+        let workspace_path =
+            crate::shell_out::get_workspace_path(&self.global_args.repository, &old_name);
+
+        if let Some(path) = workspace_path {
+            let old_path_obj = std::path::Path::new(&path);
+
+            // Get parent directory
+            if let Some(parent) = old_path_obj.parent() {
+                let new_path = parent.join(new_name);
+
+                // Step 1: Rename the directory first
+                std::fs::rename(old_path_obj, &new_path)?;
+
+                // Update jj's workspace store with the new path
+                // The repo root is the parent of the current workspace
+                let new_path_str = new_path.to_string_lossy();
+                let _ = crate::shell_out::update_workspace_path(
+                    &self.global_args,
+                    &old_name,
+                    &new_path_str,
+                );
+                // Step 2: Save original directory and change to the new one
+                let original_dir = std::env::current_dir()?;
+                std::env::set_current_dir(&new_path)?;
+
+                // Step 3: Create global args for the renamed location
+                let mut temp_global_args = self.global_args.clone();
+                temp_global_args.repository = new_path.to_string_lossy().to_string();
+
+                // Step 4: Rename the workspace in jj
+                let cmd = JjCommand::workspace_rename(new_name, temp_global_args);
+                self.queue_jj_command(cmd)?;
+
+                // Step 5: Restore original directory
+                std::env::set_current_dir(original_dir)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Start power workspace root flow - opens popup to select workspace
+    pub fn power_workspace_root_start(&mut self) -> Result<()> {
+        let output = JjCommand::workspace_list(self.global_args.clone()).run()?;
+        let workspaces: Vec<String> = output
+            .lines()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.split(':').next().unwrap_or(s).trim().to_string())
+            .collect();
+
+        if workspaces.is_empty() {
+            self.info_list = Some("No workspaces".into_text()?);
+            return Ok(());
+        }
+
+        let popup = crate::update::Popup::PowerWorkspaceRoot { workspaces };
+        self.open_popup(popup)
+    }
+
+    /// Show root path for selected workspace
+    fn power_workspace_root_show(&mut self, workspace_name: &str) -> Result<()> {
+        let path =
+            crate::shell_out::get_workspace_path(&self.global_args.repository, workspace_name);
+        match path {
+            Some(p) => {
+                self.info_list = Some(format!("{}: {}", workspace_name, p).into_text()?);
+            }
+            None => {
+                self.info_list = Some(
+                    format!("Could not find path for workspace '{}'", workspace_name)
+                        .into_text()?,
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Start power workspace update stale flow - opens popup to select workspace
+    pub fn power_workspace_update_stale_start(&mut self) -> Result<()> {
+        let output = JjCommand::workspace_list(self.global_args.clone()).run()?;
+        let workspaces: Vec<String> = output
+            .lines()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.split(':').next().unwrap_or(s).trim().to_string())
+            .collect();
+
+        if workspaces.is_empty() {
+            self.info_list = Some("No workspaces to update".into_text()?);
+            return Ok(());
+        }
+
+        let popup = crate::update::Popup::PowerWorkspaceUpdateStale { workspaces };
+        self.open_popup(popup)
+    }
+
+    /// Update stale for specific workspace
+    fn jj_workspace_power_update_stale(&mut self, workspace_name: &str) -> Result<()> {
+        // Get the workspace path
+        if let Some(workspace_path) =
+            crate::shell_out::get_workspace_path(&self.global_args.repository, workspace_name)
+        {
+            // Temporarily change to that workspace's directory and run update-stale
+            let original_dir = std::env::current_dir()?;
+            std::env::set_current_dir(&workspace_path)?;
+
+            // Create global args for the target workspace
+            let mut target_global_args = self.global_args.clone();
+            target_global_args.repository = workspace_path.clone();
+
+            let cmd = JjCommand::workspace_update_stale(target_global_args);
+            let result = self.queue_jj_command(cmd);
+
+            // Restore original directory
+            std::env::set_current_dir(original_dir)?;
+            result
+        } else {
+            self.info_list = Some(
+                format!("Could not find path for workspace '{}'", workspace_name).into_text()?,
+            );
+            Ok(())
+        }
+    }
+
+    /// Start power workspace move to flow - opens popup to select workspace
+    pub fn power_workspace_move_to_start(&mut self) -> Result<()> {
+        let output = JjCommand::workspace_list(self.global_args.clone()).run()?;
+        let workspaces: Vec<String> = output
+            .lines()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.split(':').next().unwrap_or(s).trim().to_string())
+            .collect();
+
+        if workspaces.is_empty() {
+            self.info_list = Some("No workspaces to move to".into_text()?);
+            return Ok(());
+        }
+
+        // Find the current workspace name
+        let current_workspace: Option<String> = workspaces
+            .iter()
+            .find(|w| {
+                if let Some(path) =
+                    crate::shell_out::get_workspace_path(&self.global_args.repository, w)
+                {
+                    std::path::Path::new(&path)
+                        == std::path::Path::new(&self.global_args.repository)
+                } else {
+                    false
+                }
+            })
+            .cloned();
+
+        // Filter out current workspace
+        let other_workspaces: Vec<String> = workspaces
+            .into_iter()
+            .filter(|w| current_workspace.as_deref() != Some(w.as_str()))
+            .collect();
+
+        if other_workspaces.is_empty() {
+            self.info_list = Some("No other workspaces to move to".into_text()?);
+            return Ok(());
+        }
+
+        let popup = crate::update::Popup::PowerWorkspaceMoveTo {
+            workspaces: other_workspaces,
+        };
+        self.open_popup(popup)
+    }
+
+    /// Move to a different workspace by changing the repository path and reinitializing state.
+    /// This is used for the PowerWorkspace "Move To" command.
+    pub fn move_to_workspace(&mut self, new_workspace_path: String) -> Result<()> {
+        // Update the repository path in global_args
+        self.global_args.repository = new_workspace_path.clone();
+
+        // Update the display repository
+        self.display_repository = format_repository_for_display(&new_workspace_path);
+
+        // Change the process working directory to the new workspace
+        std::env::set_current_dir(&new_workspace_path)?;
+
+        // Reinitialize JjLog
+        self.jj_log = JjLog::new()?;
+
+        // Clear cached view state
+        self.log_list.clear();
+        self.log_list_state = ListState::default();
+        self.log_list_tree_positions.clear();
+
+        // Clear saved selections (they won't transfer between workspaces)
+        self.saved_change_id = None;
+        self.saved_file_path = None;
+        self.saved_tree_position = None;
+
+        // Clear pending commands and output
+        self.queued_jj_commands.clear();
+        self.accumulated_command_output.clear();
+
+        // Close any open popup
+        self.current_popup = None;
+
+        // Clear text input state
+        self.text_input.clear();
+        self.text_cursor = 0;
+        self.popup_filter.clear();
+        self.popup_selection = 0;
+
+        // Sync to reload from new location
+        self.sync()?;
+
+        Ok(())
     }
 
     fn queue_jj_command(&mut self, cmd: JjCommand) -> Result<()> {

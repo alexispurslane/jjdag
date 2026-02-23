@@ -49,6 +49,21 @@ pub enum Popup {
     WorkspaceUpdateStale {
         workspaces: Vec<String>,
     },
+    PowerWorkspaceForget {
+        workspaces: Vec<String>,
+    },
+    PowerWorkspaceRename {
+        workspaces: Vec<String>,
+    },
+    PowerWorkspaceRoot {
+        workspaces: Vec<String>,
+    },
+    PowerWorkspaceUpdateStale {
+        workspaces: Vec<String>,
+    },
+    PowerWorkspaceMoveTo {
+        workspaces: Vec<String>,
+    },
 }
 
 /// Action to take when text prompt is submitted
@@ -70,6 +85,8 @@ pub enum TextPromptAction {
     },
     WorkspaceAdd,
     WorkspaceRenameSubmit,
+    PowerWorkspaceAdd,
+    PowerWorkspaceRename,
 }
 
 /// Location where text input is currently active
@@ -110,6 +127,11 @@ impl Popup {
             Popup::GitPushBookmark { .. } => "Select Bookmark to Push",
             Popup::WorkspaceForget { .. } => "Forget Workspace",
             Popup::WorkspaceUpdateStale { .. } => "Update Stale Workspace",
+            Popup::PowerWorkspaceForget { .. } => "Forget Workspace (Power)",
+            Popup::PowerWorkspaceRename { .. } => "Rename Workspace",
+            Popup::PowerWorkspaceRoot { .. } => "Select Workspace for Root",
+            Popup::PowerWorkspaceUpdateStale { .. } => "Update Stale Workspace (Select)",
+            Popup::PowerWorkspaceMoveTo { .. } => "Move To Workspace",
         }
     }
 
@@ -128,6 +150,11 @@ impl Popup {
             Popup::GitPushBookmark { bookmarks, .. } => bookmarks,
             Popup::WorkspaceForget { workspaces } => workspaces,
             Popup::WorkspaceUpdateStale { workspaces } => workspaces,
+            Popup::PowerWorkspaceForget { workspaces } => workspaces,
+            Popup::PowerWorkspaceRename { workspaces } => workspaces,
+            Popup::PowerWorkspaceRoot { workspaces } => workspaces,
+            Popup::PowerWorkspaceUpdateStale { workspaces } => workspaces,
+            Popup::PowerWorkspaceMoveTo { workspaces } => workspaces,
         }
     }
 }
@@ -300,6 +327,13 @@ pub enum Message {
     WorkspaceRename,
     WorkspaceRoot,
     WorkspaceUpdateStale,
+    PowerWorkspaceAdd,
+    PowerWorkspaceForget,
+    PowerWorkspaceList,
+    PowerWorkspaceRename,
+    PowerWorkspaceRoot,
+    PowerWorkspaceUpdateStale,
+    PowerWorkspaceMoveTo,
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]
@@ -744,6 +778,14 @@ fn handle_msg(term: Term, model: &mut Model, msg: Message) -> Result<Option<Mess
         Message::WorkspaceRename => model.workspace_rename_current_start()?,
         Message::WorkspaceRoot => model.jj_workspace_root()?,
         Message::WorkspaceUpdateStale => model.jj_workspace_update_stale_start()?,
+        // Power Workspace commands (not yet implemented)
+        Message::PowerWorkspaceAdd => model.power_workspace_add_start()?,
+        Message::PowerWorkspaceForget => model.power_workspace_forget_start()?,
+        Message::PowerWorkspaceList => model.jj_workspace_list()?,
+        Message::PowerWorkspaceRename => model.power_workspace_rename_start()?,
+        Message::PowerWorkspaceRoot => model.power_workspace_root_start()?,
+        Message::PowerWorkspaceUpdateStale => model.power_workspace_update_stale_start()?,
+        Message::PowerWorkspaceMoveTo => model.power_workspace_move_to_start()?,
     };
 
     Ok(None)

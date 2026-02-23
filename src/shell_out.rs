@@ -718,7 +718,10 @@ impl std::error::Error for JjCommandError {}
 ///   0a <total_len> 0a <name_len> <name> 12 <path_len> <path>
 /// Returns None if workspace not found or file cannot be read.
 pub fn get_workspace_path(repo_root: &str, workspace_name: &str) -> Option<String> {
-    let index_path = std::path::Path::new(repo_root).join(".jj/repo/workspace_store/index");
+    let index_path = std::path::Path::new(repo_root)
+        .parent()?
+        .join("default")
+        .join(".jj/repo/workspace_store/index");
     let contents = std::fs::read(index_path).ok()?;
 
     let mut i = 0;
@@ -763,6 +766,143 @@ pub fn get_workspace_path(repo_root: &str, workspace_name: &str) -> Option<Strin
     }
 
     None
+}
+
+/// Simple debug logging function
+fn debug_log(msg: &str) {
+    use std::fs::OpenOptions;
+    use std::io::Write;
+    use std::time::SystemTime;
+
+    let timestamp = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    if let Ok(mut file) = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("/tmp/jjdag.log")
+    {
+        let _ = writeln!(file, "[{}] UPDATE_WS: {}", timestamp, msg);
+    }
+}
+
+/// Update the path for a workspace in jj's workspace_store/index file.
+/// This is necessary after renaming a workspace directory to keep jj's store in sync.
+pub fn update_workspace_path(
+    global_args: &GlobalArgs,
+    workspace_name: &str,
+    new_path: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let repo_root = std::path::PathBuf::from(&global_args.repository)
+        .parent()
+        .unwrap()
+        .join("default");
+    debug_log(&format!(
+        "repo_root='{}' workspace='{}' new_path='{}'",
+        repo_root.to_string_lossy(),
+        workspace_name,
+        new_path
+    ));
+    let index_path = repo_root.join(".jj/repo/workspace_store/index");
+    debug_log(&format!("index_path='{}'", index_path.display()));
+    let contents = std::fs::read(&index_path)?;
+    debug_log(&format!("read {} bytes", contents.len()));
+
+    let new_path_bytes = new_path.as_bytes();
+    let workspace_name_bytes = workspace_name.as_bytes();
+
+    // Calculate new entry size
+    // Format: 0a <total_len> 0a <name_len> <name> 12 <path_len> <path>
+    let new_name_field_len = 2 + workspace_name_bytes.len(); // 0a <len> <bytes>
+    let new_path_field_len = 2 + new_path_bytes.len(); // 12 <len> <bytes>
+    let new_entry_len = new_name_field_len + new_path_field_len;
+
+    let mut new_contents = Vec::new();
+    let mut i = 0;
+    let mut found = false;
+
+    while i < contents.len() {
+        debug_log(&format!("parsing at i={}", i));
+        // Check entry start
+        if contents.get(i) != Some(&0x0a) {
+            debug_log(&format!("no more entries at i={}", i));
+            // Copy remaining bytes as-is
+            new_contents.extend_from_slice(&contents[i..]);
+            break;
+        }
+        i += 1;
+
+        // Read entry length
+        let entry_len = *contents.get(i).ok_or("Unexpected end of file")? as usize;
+        i += 1;
+        let entry_start = i;
+        let entry_end = entry_start + entry_len;
+
+        debug_log(&format!("entry_len={} end={}", entry_len, entry_end));
+        // Parse name field
+        if contents.get(i) != Some(&0x0a) {
+            new_contents.extend_from_slice(&contents[entry_start - 2..entry_end]);
+            i = entry_end;
+            continue;
+        }
+        i += 1;
+        let name_len = *contents.get(i).ok_or("Unexpected end of file")? as usize;
+        i += 1;
+        let name_bytes = &contents
+            .get(i..i + name_len)
+            .ok_or("Unexpected end of file")?;
+        let name = String::from_utf8_lossy(name_bytes);
+        debug_log(&format!("name='{}'", name));
+        i += name_len;
+
+        // Parse path field (skip for now)
+        if contents.get(i) != Some(&0x12) {
+            new_contents.extend_from_slice(&contents[entry_start - 2..entry_end]);
+            i = entry_end;
+            continue;
+        }
+        i += 1;
+        let path_len = *contents.get(i).ok_or("Unexpected end of file")? as usize;
+        i += 1;
+        let old_path_start = i;
+        i += path_len; // Skip old path bytes
+        let old_path =
+            String::from_utf8_lossy(&contents[old_path_start..old_path_start + path_len]);
+        debug_log(&format!("old_path='{}'", old_path));
+
+        debug_log(&format!("found name: '{}'", workspace_name));
+        if name == workspace_name {
+            debug_log(&format!("FOUND '{}', updating path", workspace_name));
+            // Found the workspace - write updated entry
+            found = true;
+            debug_log(&format!("writing new entry len={}", new_entry_len + 2));
+            new_contents.push(0x0a); // Entry start tag
+            new_contents.push(new_entry_len as u8); // Entry length
+            new_contents.push(0x0a); // Name field tag
+            new_contents.push(workspace_name_bytes.len() as u8); // Name length
+            new_contents.extend_from_slice(workspace_name_bytes); // Name bytes
+            new_contents.push(0x12); // Path field tag
+            new_contents.push(new_path_bytes.len() as u8); // Path length
+            new_contents.extend_from_slice(new_path_bytes); // Path bytes
+        } else {
+            // Copy original entry
+            new_contents.extend_from_slice(&contents[entry_start - 2..entry_end]);
+        }
+
+        i = entry_end;
+    }
+
+    if found {
+        debug_log(&format!("writing {} bytes to index", new_contents.len()));
+        std::fs::write(&index_path, new_contents)?;
+        debug_log("SUCCESS");
+        Ok(())
+    } else {
+        debug_log(&format!("FAILED: workspace '{}' not found", workspace_name));
+        Err(format!("Workspace '{}' not found in store", workspace_name).into())
+    }
 }
 
 struct JjCommandOutput {
