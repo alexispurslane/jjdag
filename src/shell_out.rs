@@ -424,8 +424,11 @@ impl JjCommand {
         Self::_new(&args, global_args, None, ReturnOutput::Stderr)
     }
 
-    pub fn edit(change_id: &str, global_args: GlobalArgs) -> Self {
-        let args = ["edit", change_id];
+    pub fn edit(change_id: &str, ignore_immutable: bool, global_args: GlobalArgs) -> Self {
+        let mut args = vec!["edit", change_id];
+        if ignore_immutable {
+            args.push("--ignore-immutable");
+        }
         Self::_new(&args, global_args, None, ReturnOutput::Stderr)
     }
 

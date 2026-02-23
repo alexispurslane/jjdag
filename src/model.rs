@@ -7,7 +7,7 @@ use crate::{
     terminal::Term,
     update::{
         AbandonMode, AbsorbMode, BookmarkMoveMode, DuplicateDestination, DuplicateDestinationType,
-        GitFetchMode, GitPushMode, InterdiffMode, Message, MetaeditAction, NewMode,
+        EditMode, GitFetchMode, GitPushMode, InterdiffMode, Message, MetaeditAction, NewMode,
         NextPrevDirection, NextPrevMode, ParallelizeSource, RebaseDestination,
         RebaseDestinationType, RebaseSourceType, RestoreMode, RevertDestination,
         RevertDestinationType, RevertRevision, SignAction, SimplifyParentsMode, SquashMode,
@@ -1392,11 +1392,12 @@ impl Model {
         self.queue_jj_command(cmd)
     }
 
-    pub fn jj_edit(&mut self) -> Result<()> {
+    pub fn jj_edit(&mut self, mode: EditMode) -> Result<()> {
         let Some(change_id) = self.get_selected_change_id() else {
             return self.invalid_selection();
         };
-        let cmd = JjCommand::edit(change_id, self.global_args.clone());
+        let ignore_immutable = mode == EditMode::IgnoreImmutable;
+        let cmd = JjCommand::edit(change_id, ignore_immutable, self.global_args.clone());
         self.queue_jj_command(cmd)
     }
 
@@ -1410,7 +1411,7 @@ impl Model {
         // If on a commit (revision title), edit that revision
         if tree_pos.len() == 1 {
             debug_log("On commit, calling jj_edit");
-            return self.jj_edit();
+            return self.jj_edit(EditMode::Default);
         }
 
         // If on a diff line (tree_pos.len() == 4), get line number and parent file
@@ -2168,7 +2169,7 @@ impl Model {
                 "bookmark",
                 "list",
                 "-r",
-                "heads(::- & bookmarks())",
+                "heads(::@- & bookmarks())",
                 "-T",
                 "name",
             ],

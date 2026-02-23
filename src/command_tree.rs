@@ -1,7 +1,7 @@
 use crate::update::{
     AbandonMode, AbsorbMode, BookmarkMoveMode, DescribeMode, DuplicateDestination,
-    DuplicateDestinationType, GitFetchMode, GitPushMode, InterdiffMode, Message, MetaeditAction,
-    NewMode, NextPrevDirection, NextPrevMode, ParallelizeSource, RebaseDestination,
+    DuplicateDestinationType, EditMode, GitFetchMode, GitPushMode, InterdiffMode, Message,
+    MetaeditAction, NewMode, NextPrevDirection, NextPrevMode, ParallelizeSource, RebaseDestination,
     RebaseDestinationType, RebaseSourceType, RestoreMode, RevertDestination, RevertDestinationType,
     RevertRevision, SignAction, SimplifyParentsMode, SquashMode, ViewMode,
 };
@@ -454,7 +454,17 @@ impl CommandTree {
                 "Edit",
                 "Selection",
                 vec![KeyCode::Char('e'), KeyCode::Char('e')],
-                CommandTreeNode::new_action(Message::Edit),
+                CommandTreeNode::new_action(Message::Edit {
+                    mode: EditMode::Default,
+                }),
+            ),
+            (
+                "Edit",
+                "Selection ignoring immutability",
+                vec![KeyCode::Char('e'), KeyCode::Char('i')],
+                CommandTreeNode::new_action(Message::Edit {
+                    mode: EditMode::IgnoreImmutable,
+                }),
             ),
             (
                 "Commands",

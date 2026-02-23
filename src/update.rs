@@ -186,7 +186,9 @@ pub enum Message {
         destination_type: DuplicateDestinationType,
         destination: DuplicateDestination,
     },
-    Edit,
+    Edit {
+        mode: EditMode,
+    },
     EnterPressed,
     Evolog {
         patch: bool,
@@ -355,6 +357,12 @@ pub enum MetaeditAction {
 
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum DescribeMode {
+    Default,
+    IgnoreImmutable,
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum EditMode {
     Default,
     IgnoreImmutable,
 }
@@ -658,7 +666,7 @@ fn handle_msg(term: Term, model: &mut Model, msg: Message) -> Result<Option<Mess
             destination_type,
             destination,
         } => model.jj_duplicate(destination_type, destination)?,
-        Message::Edit => model.jj_edit()?,
+        Message::Edit { mode } => model.jj_edit(mode)?,
         Message::EnterPressed => model.enter_pressed()?,
         Message::Evolog { patch } => model.jj_evolog(patch, term)?,
         Message::FileTrack => model.jj_file_track(term)?,
