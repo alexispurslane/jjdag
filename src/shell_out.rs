@@ -432,6 +432,11 @@ impl JjCommand {
         Self::_new(&args, global_args, None, ReturnOutput::Stderr)
     }
 
+    pub fn resolve(change_id: &str, global_args: GlobalArgs, term: Term) -> Self {
+        let args = ["resolve", "-r", change_id];
+        Self::_new(&args, global_args, Some(term), ReturnOutput::Stderr)
+    }
+
     pub fn evolog(change_id: &str, patch: bool, global_args: GlobalArgs, term: Term) -> Self {
         let mut args = vec!["evolog", "-r", change_id];
         if patch {

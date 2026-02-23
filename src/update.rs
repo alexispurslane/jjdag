@@ -242,6 +242,7 @@ pub enum Message {
         destination_type: RevertDestinationType,
         destination: RevertDestination,
     },
+    Resolve,
     RightMouseClick {
         row: u16,
         column: u16,
@@ -700,6 +701,7 @@ fn handle_msg(term: Term, model: &mut Model, msg: Message) -> Result<Option<Mess
             destination_type,
             destination,
         } => model.jj_revert(revision, destination_type, destination)?,
+        Message::Resolve => model.jj_resolve(term)?,
         Message::SaveSelection => model.save_selection()?,
         Message::Sign { action, range } => model.jj_sign(action, range)?,
         Message::SimplifyParents { mode } => model.jj_simplify_parents(mode)?,

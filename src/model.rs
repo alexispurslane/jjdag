@@ -2113,6 +2113,14 @@ impl Model {
         self.queue_jj_command(cmd)
     }
 
+    pub fn jj_resolve(&mut self, term: Term) -> Result<()> {
+        let Some(change_id) = self.get_selected_change_id() else {
+            return self.invalid_selection();
+        };
+        let cmd = JjCommand::resolve(&change_id, self.global_args.clone(), term);
+        self.queue_jj_command(cmd)
+    }
+
     pub fn jj_sign(&mut self, action: SignAction, range: bool) -> Result<()> {
         let revset = if range {
             let Some(from_change_id) = self.get_saved_change_id() else {

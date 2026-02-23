@@ -68,7 +68,7 @@ Or with the nix flake:
 inputs.jjdag.url = "github:anthrofract/jjdag";
 ```
 
-Missing Features in jjdag
+## Missing Features in jjdag
 
 ### 1. **Config Management** (`jj config`)
 - `config edit`, `get`, `list`, `path`, `set`, `unset`

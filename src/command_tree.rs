@@ -1733,6 +1733,12 @@ impl CommandTree {
             ),
             (
                 "Commands",
+                "Resolve",
+                vec![KeyCode::Char('X')],
+                CommandTreeNode::new_action(Message::Resolve),
+            ),
+            (
+                "Commands",
                 "Undo",
                 vec![KeyCode::Char('u')],
                 CommandTreeNode::new_children(),
