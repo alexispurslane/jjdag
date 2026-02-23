@@ -2161,6 +2161,47 @@ impl Model {
         self.queue_jj_command(cmd)
     }
 
+    pub fn jj_tug_and_git_push(&mut self) -> Result<()> {
+        // Find bookmarks at the parent commit that will be tugged
+        let output = JjCommand::bookmark_list_with_args(
+            &[
+                "bookmark",
+                "list",
+                "-r",
+                "heads(::- & bookmarks())",
+                "-T",
+                "name",
+            ],
+            self.global_args.clone(),
+        )
+        .run()?;
+
+        let bookmarks: Vec<String> = output
+            .lines()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .collect();
+
+        if bookmarks.is_empty() {
+            self.info_list = Some("No bookmarks to tug and push".into_text()?);
+            return Ok(());
+        }
+
+        // Queue tug command first
+        let tug_cmd = JjCommand::tug(self.global_args.clone());
+
+        // Then queue git push for each bookmark
+        let mut cmds = vec![tug_cmd];
+        for bookmark in &bookmarks {
+            let push_cmd =
+                JjCommand::git_push(Some("-b"), Some(bookmark), self.global_args.clone());
+            cmds.push(push_cmd);
+        }
+
+        self.queue_jj_commands(cmds)
+    }
+
     pub fn jj_squash(&mut self, mode: SquashMode, term: Term) -> Result<()> {
         let cmd = match mode {
             SquashMode::Default => {

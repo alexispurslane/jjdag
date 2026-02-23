@@ -271,6 +271,8 @@ pub enum Message {
     Status,
     /// Move the nearest bookmark ancestor to the current commit
     Tug,
+    /// Tug bookmark and push it to origin
+    TugAndGitPush,
     ToggleIgnoreImmutable,
     ToggleLogListFold,
     Undo,
@@ -697,6 +699,7 @@ fn handle_msg(term: Term, model: &mut Model, msg: Message) -> Result<Option<Mess
         Message::Squash { mode } => model.jj_squash(mode, term)?,
         Message::Status => model.jj_status(term)?,
         Message::Tug => model.jj_tug()?,
+        Message::TugAndGitPush => model.jj_tug_and_git_push()?,
         Message::Undo => model.jj_undo()?,
         Message::View { mode } => model.jj_view(mode, term)?,
     };

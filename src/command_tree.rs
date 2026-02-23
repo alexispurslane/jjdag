@@ -615,6 +615,12 @@ impl CommandTree {
                 }),
             ),
             (
+                "Git push",
+                "Tug and push bookmark",
+                vec![KeyCode::Char('g'), KeyCode::Char('p'), KeyCode::Char('T')],
+                CommandTreeNode::new_action(Message::TugAndGitPush),
+            ),
+            (
                 "Commands",
                 "Interdiff",
                 vec![KeyCode::Char('i')],
