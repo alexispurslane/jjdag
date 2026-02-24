@@ -6,160 +6,146 @@ A Rust TUI to manipulate the [Jujutsu](https://github.com/jj-vcs/jj) DAG.
 
 Inspired by the great UX of [Magit](https://magit.vc/).
 
-Very much a work in progress, consider this a pre-alpha release. But I already use it personally for almost all jj operations.
+---
 
-Once you run the program you can press `?` to show the help info. Most of the commands you can see by running `jj help` in the terminal are implemented.
+## 🙏 Acknowledgements
 
-## Features
+**Huge thanks to [anthrofract](https://github.com/anthrofract/jjdag) for creating the original jjdag!**
 
-- Browse the jj log tree with dynamic folding/unfolding of commits and file diffs.
-- Multi-key command sequences with transient-menu style help popups. For example type `gpa` to run `jj git push --all`, or `gpt` to run `jj git push --tracked`, or `ss` to squash the selected revision into its parent.
-- Output from jj commands is displayed in the bottom panel.
-- Mouse support: left click to select, right click to toggle folding, and scroll wheel to scroll.
+This project is a fork of their excellent work. They built the foundation — the TUI framework, the core command system, the log tree visualization, and much more. Without their pioneering effort, this fork wouldn't exist.
 
-## Supported jj commands
-
-- `jj abandon`
-- `jj absorb`
-- `jj bookmark create`
-- `jj bookmark delete`
-- `jj bookmark forget`
-- `jj bookmark move`
-- `jj bookmark rename`
-- `jj bookmark set`
-- `jj bookmark track`
-- `jj bookmark untrack`
-- `jj commit`
-- `jj describe`
-- `jj diff`
-- `jj duplicate`
-- `jj edit`
-- `jj evolog`
-- `jj file track`
-- `jj file untrack`
-- `jj git fetch`
-- `jj git push`
-- `jj interdiff`
-- `jj metaedit`
-- `jj new`
-- `jj next`
-- `jj parallelize`
-- `jj prev`
-- `jj rebase`
-- `jj redo`
-- `jj restore`
-- `jj revert`
-- `jj sign`
-- `jj simplify-parents`
-- `jj squash`
-- `jj status`
-- `jj undo`
-- `jj unsign`
-
-## Installation
-
-With cargo: 
-```sh
-cargo install --git https://github.com/anthrofract/jjdag
-```
-
-Or with the nix flake:
-```nix
-inputs.jjdag.url = "github:anthrofract/jjdag";
-```
-
-## Missing Features in jjdag
-
-### 1. **Config Management** (`jj config`)
-- `config edit`, `get`, `list`, `path`, `set`, `unset`
-- Essential for users wanting to tweak jj settings from within the TUI
-
-### 2. **Bookmark List** (`jj bookmark list`)
-- View all bookmarks with their targets, tracking status, and conflicts
-- Currently only has create/delete/move/rename/etc, but no way to *list* bookmarks in a popup
-
-### 3. **File Operations** (`jj file` subcommands)
-- **`annotate`** - Show source change for each line (git blame equivalent)
-- **`chmod`** - Set/remove executable bit
-- **`list`** - List files in a revision
-- **`search`** - Search for content in files
-- **`show`** - Print file contents
-
-### 4. **Git Operations**
-- **`git clone`** - Clone a new repo
-- **`git init`** - Initialize a new Git-backed repo
-- **`git remote`** - Manage remotes (add, list, remove, rename, set-url)
-- **`git export/import`** - Sync with underlying Git repo
-- **`git colocation`** - Enable/disable colocation status
-- **`git root`** - Show underlying Git directory
-
-### 5. **Operation Log** (`jj operation`)
-- **`op log`** - View operation history (undo/redo log)
-- **`op show`** - Show changes made by a specific operation
-- **`op diff`** - Compare repo state between operations
-- **`op restore`** - Restore repo to an earlier operation state
-- **`op revert`** - Revert a specific operation
-- **`op abandon`** - Discard old operation history
-- **`op integrate`** - Integrate orphaned operations
-
-### 7. **Tag Management** (`jj tag`)
-- **`tag list`** - List tags and their targets
-- **`tag set`** - Create/update tags
-- **`tag delete`** - Delete tags
-
-### 8. **Sparse Checkouts** (`jj sparse`)
-- **`sparse list/edit/set/reset`** - Manage which paths are present in the working copy
-
-### 9. **Workspace Management** (`jj workspace`)
-- **`workspace add`** - Add additional working copies
-- **`workspace list`** - List workspaces
-- **`workspace forget`** - Stop tracking a workspace
-- **`workspace rename`** - Rename current workspace
-- **`workspace root`** - Show workspace root
-- **`workspace update-stale`** - Update stale workspaces
-
-### 10. **Bisect** (`jj bisect`)
-- **`bisect run`** - Binary search to find first bad revision
-
-### 11. **Code Formatting** (`jj fix`)
-- **`fix`** - Apply formatting fixes or other transformations to revisions
-
-### 12. **Gerrit Integration** (`jj gerrit`)
-- **`gerrit upload`** - Upload changes to Gerrit for code review
-
-### 13. **Utility Commands** (`jj util`)
-- **`util completion`** - Shell completion scripts
-- **`util gc`** - Garbage collection
-- **`util exec`** - Execute external commands
-- Others: `config-schema`, `install-man-pages`, `markdown-help`
-
-### 14. **Diff Editing**
-- **`diffedit`** - Touch up content changes with a diff editor (distinct from the TUI's fold/unfold view)
-
-### 15. **Misc**
-- **`show`** - Show commit description and changes (jjdag has its own view, but `show` has different formatting options)
-- **`root`** - Show workspace root directory
-- **`version`** - Display version
+- **Original Repo**: https://github.com/anthrofract/jjdag
 
 ---
 
-## Priority Assessment
+## What's New in This Fork
 
-**High-value additions for a TUI:**
-1. **`bookmark list`** - Would fit naturally in a popup like the existing bookmark delete popup
-2. **`op log`** - Critical for understanding undo/redo history; could be a new panel
-3. **`resolve`** - Essential for conflict workflows (currently requires leaving the TUI)
-4. **`tag list/set/delete`** - Tags are commonly used alongside bookmarks
-5. **`file annotate`** - Git blame is a common TUI operation
-6. **`workspace list`** - Useful for multi-workspace workflows
+Since forking, we've made significant improvements across the entire application:
 
-**Medium priority:**
-- `config` commands (usually one-time setup)
-- `file list/show` (partially covered by the diff view)
-- `git remote` management
+### Core UX Improvements
 
-**Lower priority (niche/advanced):**
-- `bisect` (complex interactive workflow)
-- `gerrit` (specific to Gerrit users)
-- `fix` (usually run via hooks/CI)
-- `util` commands
+- **Inline Text Editing** — Replaced external editor prompts with TUI-based text input for revision descriptions (`dd`), bookmark creation (`bc`), revset editing, and various other prompts. This eliminates the context-switching pain of popping out to an external editor for simple inputs.
+- **Text Prompt Popup** — for the cases where inline editing didn't make sense, popping up an external editor just to ask for a simple line of text (usually under a word!) was replaced with a TUI text propmt popup, for example when renaming bookmarks, workspaces, etc.
+- **Fuzzy Popup System** — Added fuzzy searchable popups for 15+ command types including bookmark delete/rename/set/track/untrack, file track, git fetch remote/branch selection, and workspace forget/rename. No more typing bookmark names blindly into an external editor!
+- **Easy Splitting** — The double-editor-opening issue with `split` command has been abolished: now, you can split, and then edit the resulting revisiond descriptions inline, without ever leaving the TUI
+
+### Branch-Based Workflows (for GitHub and Git Users)
+
+jj's bookmark system is powerful but can feel awkward for GitHub-style branch workflows. We added support for the common bookmark "tug" alias to make things a little easier, but then we added three more features to make it sing:
+
+1. **Git Push & Tug Command** — A command that automates tugging a bookmark up to the current revision, then pushing to git, all in one go. Perfect for keeping GitHub in sync.
+2. **New Revision on Bookmark** — Creates new revisions on top of the current revision and tugs the bookmark up in one command, automating "staying on a branch" conceptually.
+3. **Resolve Command** — Launches external merge tools for conflict resolution directly from the TUI (essential for multi-person branch workflows).
+
+### The Power-Workspace Workflow
+
+"Power workspaces" are a layered workflow on top of jj's native workspace system that maintains an organized, structured, hierarchical workspace organization automatically.
+
+- When you add your first additional workspace, it automatically "scoops up" your initial workspace into a `default/` subdirectory of the original project directory.
+- All workspaces you add get their own sibling directories underneath the original project directory, next to the `default/` workspace, named after the workspace name.
+- When you `forget` down to just `default`, it automatically "un-scoops" to restore standard structure as if it was never there.
+- When you rename, both the workspace *and* the workspace directory are kept in sync.
+- Jjdag allows you to easily move between workspaces without leaving it or breaking your flow.
+- Jjdag also edits jj's internal binary database files to keep its knowledge in sync with what jjdag is doing.
+
+### Command Additions & Improvements
+
+- **Workspace Management** — Full support for `workspace add`, `workspace list`, `workspace forget`, `workspace rename`, `workspace root`, and `workspace update-stale` (both native and Power Workspace variants)
+- **Ignore-Immutable Variants** — Commands like `describe` and `edit` that respect immutable revisions now have ignore-immutable variants (`d i` for describe ignoring immutability, `e i` for edit ignoring immutability)
+- **Enter/Double-Click Improvements** — Jump to file with line number support for hunks
+
+### Bug Fixes
+- Fixed `jj git fetch` commands
+- Various other bug fixes and stability improvements
+
+---
+
+## Installation
+
+With cargo:
+```sh
+cargo install --git https://github.com/alexispurslane/jjdag
+```
+
+Or clone and build locally:
+```sh
+git clone https://github.com/alexispurslane/jjdag
+cd jjdag
+cargo install --path .
+```
+
+---
+
+## Quick Start Guide
+
+1. **Run jjdag**:
+   ```sh
+   jj
+   ```
+
+2. **Press `?`** to show the help overlay with all available commands.
+
+3. **Navigation**:
+   - `j` / `k` — Move up/down in the log tree
+   - `h` / `l` — Collapse/expand commits
+   - Enter — Select a commit or open a file
+   - Mouse left-click — Select
+   - Mouse right-click — Toggle folding
+   - Scroll wheel — Scroll
+
+4. **Common Commands**:
+   - `cc` — Commit
+   - `dd` — Describe (edit description)
+   - `ss` — Squash into parent
+   - `uu` — Undo last operation
+   - `rr` — Redo
+   - `ee` — Edit (checkout) revision
+   - `ggp` — Git push (with subcommands like `a` for all, `t` for tracked)
+   - `ggf` — Git fetch
+
+5. **Multi-Key Sequences**:
+   jjdag uses Magit-style key sequences. Type the first key, wait for the popup, then type the next key:
+   - `g` + `p` + `a` → `jj git push --all`
+   - `g` + `p` + `t` → `jj git push --tracked`
+   - `b` + `c` → Create bookmark
+   - `b` + `d` → Delete bookmark (with fuzzy search)
+
+---
+
+## Supported jj Commands
+
+### Bookmarks
+- `bookmark create`, `delete`, `forget`, `move`, `rename`, `set`, `track`, `untrack`, `list`
+
+### Commits & History
+- `abandon`, `absorb`, `commit`, `describe`, `duplicate`, `edit`, `new`, `next`, `prev`, `rebase`, `redo`, `restore`, `revert`, `sign`, `simplify-parents`, `squash`, `undo`, `unsign`
+
+### Diff & File
+- `diff`, `file track`, `file untrack`, `interdiff`
+
+### Git
+- `git fetch`, `git push`
+
+### Other
+- `evolog`, `parallelize`, `resolve`, `status`
+
+### Workspace (Power Workflow)
+- `workspace add`, `workspace forget`, `workspace list`, `workspace rename`, `workspace root`
+
+---
+
+## Missing Features
+
+See the original project for the full roadmap. High-priority additions planned:
+- `config` management
+- `op log` (operation log)
+- `tag` management
+- `file annotate` (git blame)
+- `sparse` checkouts
+- `bisect`
+
+---
+
+## License
+
+Same as the original — MIT.
