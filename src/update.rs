@@ -214,10 +214,26 @@ pub enum Message {
     TextInputMoveHome,
     /// Move cursor to end of text input
     TextInputMoveEnd,
+    /// Move cursor up one line (for multi-line)
+    TextInputMoveUp,
+    /// Move cursor down one line (for multi-line)
+    TextInputMoveDown,
     /// Submit the text input
     TextInputSubmit,
     /// Cancel the text input
     TextInputCancel,
+    /// Insert a newline in text input (for multi-line)
+    TextInputNewline,
+    /// Cut from cursor to end of current line
+    TextInputCutToEnd,
+    /// Copy from cursor to end of current line
+    TextInputCopyToEnd,
+    /// Paste from clipboard
+    TextInputPaste,
+    /// Move cursor to start of current line
+    TextInputMoveLineStart,
+    /// Move cursor to end of current line
+    TextInputMoveLineEnd,
     Clear,
     Commit,
 
@@ -526,10 +542,12 @@ pub enum ViewMode {
 }
 
 pub fn update(terminal: Term, model: &mut Model) -> Result<()> {
+    log::debug!("Processing update cycle");
     model.process_jj_command_queue()?;
 
     let mut current_msg = handle_event(model)?;
     while let Some(msg) = current_msg {
+        log::debug!("Handling message: {:?}", msg);
         current_msg = handle_msg(terminal.clone(), model, msg)?;
     }
 
@@ -541,10 +559,16 @@ fn handle_event(model: &mut Model) -> Result<Option<Message>> {
         match event::read()? {
             Event::Key(key) => {
                 if key.kind == event::KeyEventKind::Press {
+                    log::debug!(
+                        "Key pressed: {:?}, modifiers: {:?}",
+                        key.code,
+                        key.modifiers
+                    );
                     return Ok(handle_key(model, key));
                 }
             }
             Event::Mouse(mouse) => {
+                log::debug!("Mouse event: {:?}", mouse.kind);
                 return Ok(handle_mouse(mouse));
             }
             _ => {}
@@ -557,7 +581,12 @@ fn handle_key(model: &mut Model, key: event::KeyEvent) -> Option<Message> {
     // When text input is active (single source of truth)
     // When text input is active, dispatch to unified TextInput messages
     if model.text_input_location != crate::update::TextInputLocation::None {
+        log::debug!("Text input active, dispatching text input message");
         return match key.code {
+            // Shift+Enter inserts newline, otherwise submit
+            KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                Some(Message::TextInputNewline)
+            }
             KeyCode::Enter => Some(Message::TextInputSubmit),
             KeyCode::Esc => Some(Message::TextInputCancel),
             KeyCode::Backspace => Some(Message::TextInputBackspace),
@@ -573,16 +602,39 @@ fn handle_key(model: &mut Model, key: event::KeyEvent) -> Option<Message> {
             KeyCode::Home => Some(Message::TextInputMoveHome),
             KeyCode::End => Some(Message::TextInputMoveEnd),
             KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                Some(Message::TextInputMoveHome)
+                Some(Message::TextInputMoveLineStart)
             }
             KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                Some(Message::TextInputMoveEnd)
+                Some(Message::TextInputMoveLineEnd)
+            }
+            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                Some(Message::TextInputDelete)
             }
             KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                Some(Message::TextInputDelete)
+                Some(Message::TextInputCutToEnd)
+            }
+            KeyCode::Char('y') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                Some(Message::TextInputPaste)
+            }
+            KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                Some(Message::TextInputCopyToEnd)
             }
             KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 Some(Message::TextInputBackspace)
+            }
+            // Ctrl-J inserts newline
+            KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                Some(Message::TextInputNewline)
+            }
+            // Up/Down arrows for line navigation
+            KeyCode::Up => Some(Message::TextInputMoveUp),
+            KeyCode::Down => Some(Message::TextInputMoveDown),
+            // Ctrl-N/P for line navigation (vim-style)
+            KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                Some(Message::TextInputMoveDown)
+            }
+            KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                Some(Message::TextInputMoveUp)
             }
             KeyCode::Char(c) => Some(Message::TextInputChar { ch: c }),
             _ => None,
@@ -591,6 +643,7 @@ fn handle_key(model: &mut Model, key: event::KeyEvent) -> Option<Message> {
 
     // When a selection popup is active (not text input) AND we're not in a command sequence
     if model.current_popup.is_some() && !model.has_pending_command_keys() {
+        log::debug!("Popup active, handling popup navigation");
         return match key.code {
             KeyCode::Enter => Some(Message::PopupSelect),
             KeyCode::Esc => Some(Message::PopupCancel),
@@ -664,10 +717,14 @@ fn handle_mouse(mouse: event::MouseEvent) -> Option<Message> {
 }
 
 fn handle_msg(term: Term, model: &mut Model, msg: Message) -> Result<Option<Message>> {
+    log::debug!("Handling message: {:?}", msg);
     match msg {
         // General
         Message::Clear => model.clear(),
-        Message::Quit => model.quit(),
+        Message::Quit => {
+            log::info!("Quit message received");
+            model.quit()
+        }
         Message::Refresh => model.refresh()?,
         Message::SetRevset => model.set_revset(term)?,
 
@@ -695,8 +752,14 @@ fn handle_msg(term: Term, model: &mut Model, msg: Message) -> Result<Option<Mess
         Message::ScrollUp => model.scroll_up_once(),
 
         // Commands
-        Message::Abandon { mode } => model.jj_abandon(mode)?,
-        Message::Absorb { mode } => model.jj_absorb(mode)?,
+        Message::Abandon { mode } => {
+            log::info!("Abandon command, mode: {:?}", mode);
+            model.jj_abandon(mode)?
+        }
+        Message::Absorb { mode } => {
+            log::info!("Absorb command, mode: {:?}", mode);
+            model.jj_absorb(mode)?
+        }
         Message::BookmarkDelete => model.jj_bookmark_delete(term)?,
         Message::BookmarkForget { include_remotes } => {
             model.jj_bookmark_forget(include_remotes, term)?
@@ -725,24 +788,47 @@ fn handle_msg(term: Term, model: &mut Model, msg: Message) -> Result<Option<Mess
         Message::TextInputMoveRight => model.text_input_move_right(),
         Message::TextInputMoveHome => model.text_input_move_home(),
         Message::TextInputMoveEnd => model.text_input_move_end(),
+        Message::TextInputMoveUp => model.text_input_move_up(),
+        Message::TextInputMoveDown => model.text_input_move_down(),
         Message::TextInputSubmit => model.text_input_submit(term)?,
         Message::TextInputCancel => model.text_input_cancel(),
-        Message::Commit => model.jj_commit(term)?,
+        Message::TextInputNewline => model.text_input_newline(),
+        Message::TextInputCutToEnd => model.text_input_cut_to_end(),
+        Message::TextInputCopyToEnd => model.text_input_copy_to_end(),
+        Message::TextInputPaste => model.text_input_paste(),
+        Message::TextInputMoveLineStart => model.text_input_move_line_start(),
+        Message::TextInputMoveLineEnd => model.text_input_move_line_end(),
+        Message::Commit => {
+            log::info!("Commit command");
+            model.jj_commit(term)?
+        }
 
         Message::Duplicate {
             destination_type,
             destination,
         } => model.jj_duplicate(destination_type, destination)?,
-        Message::Edit { mode } => model.jj_edit(mode)?,
+        Message::Edit { mode } => {
+            log::info!("Edit command, mode: {:?}", mode);
+            model.jj_edit(mode)?
+        }
         Message::EnterPressed => model.enter_pressed()?,
         Message::Evolog { patch } => model.jj_evolog(patch, term)?,
         Message::FileTrack => model.jj_file_track(term)?,
         Message::FileUntrack => model.jj_file_untrack()?,
-        Message::GitFetch { mode } => model.jj_git_fetch(mode, term)?,
-        Message::GitPush { mode } => model.jj_git_push(mode, term)?,
+        Message::GitFetch { mode } => {
+            log::info!("Git fetch command, mode: {:?}", mode);
+            model.jj_git_fetch(mode, term)?
+        }
+        Message::GitPush { mode } => {
+            log::info!("Git push command, mode: {:?}", mode);
+            model.jj_git_push(mode, term)?
+        }
         Message::Interdiff { mode } => model.jj_interdiff(mode, term)?,
         Message::Metaedit { action } => model.jj_metaedit(action, term)?,
-        Message::New { mode } => model.jj_new(mode)?,
+        Message::New { mode } => {
+            log::info!("New command, mode: {:?}", mode);
+            model.jj_new(mode)?
+        }
         Message::NewAfterTrunkSync => model.jj_new_after_trunk_sync()?,
         Message::NewOnBranch => model.jj_new_on_branch()?,
         Message::RebaseSelectedBranchOntoTrunk => model.jj_rebase_selected_branch_onto_trunk()?,
@@ -754,12 +840,22 @@ fn handle_msg(term: Term, model: &mut Model, msg: Message) -> Result<Option<Mess
             mode,
             offset,
         } => model.jj_next_prev(direction, mode, offset, term)?,
-        Message::Parallelize { source } => model.jj_parallelize(source, term)?,
+        Message::Parallelize { source } => {
+            log::info!("Parallelize command, source: {:?}", source);
+            model.jj_parallelize(source, term)?
+        }
         Message::Rebase {
             source_type,
             destination_type,
             destination,
-        } => model.jj_rebase(source_type, destination_type, destination)?,
+        } => {
+            log::info!(
+                "Rebase command: {:?} -> {:?}",
+                source_type,
+                destination_type
+            );
+            model.jj_rebase(source_type, destination_type, destination)?
+        }
         Message::Redo => model.jj_redo()?,
         Message::Restore { mode } => model.jj_restore(mode)?,
         Message::Revert {
@@ -772,11 +868,17 @@ fn handle_msg(term: Term, model: &mut Model, msg: Message) -> Result<Option<Mess
         Message::Sign { action, range } => model.jj_sign(action, range)?,
         Message::SimplifyParents { mode } => model.jj_simplify_parents(mode)?,
         Message::Split => model.jj_split(term)?,
-        Message::Squash { mode } => model.jj_squash(mode, term)?,
+        Message::Squash { mode } => {
+            log::info!("Squash command, mode: {:?}", mode);
+            model.jj_squash(mode, term)?
+        }
         Message::Status => model.jj_status(term)?,
         Message::Tug => model.jj_tug()?,
         Message::TugAndGitPush => model.jj_tug_and_git_push()?,
-        Message::Undo => model.jj_undo()?,
+        Message::Undo => {
+            log::info!("Undo command");
+            model.jj_undo()?
+        }
         Message::View { mode } => model.jj_view(mode, term)?,
         Message::WorkspaceAdd => model.workspace_add_start()?,
         Message::WorkspaceForget => model.jj_workspace_forget()?,

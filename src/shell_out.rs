@@ -76,20 +76,24 @@ impl JjCommand {
     }
 
     fn run_noninteractive(&self) -> Result<JjCommandOutput, JjCommandError> {
+        log::info!("Running jj command: {}", self.args.join(" "));
         let mut command = self.base_command();
         command.args(self.args.clone());
         let output = command.output().map_err(JjCommandError::new_other)?;
 
         let stderr = String::from_utf8_lossy(&output.stderr).into();
         if output.status.success() {
+            log::debug!("Command succeeded: {}", self.args.join(" "));
             let stdout = String::from_utf8_lossy(&output.stdout).into();
             Ok(JjCommandOutput { stdout, stderr })
         } else {
+            log::error!("Command failed: {} - {}", self.args.join(" "), stderr);
             Err(JjCommandError::new_failed(stderr))
         }
     }
 
     fn run_interactive(&self, term: &Term) -> Result<JjCommandOutput, JjCommandError> {
+        log::info!("Running interactive jj command: {}", self.args.join(" "));
         let mut command = self.base_command();
         command.args(self.args.clone());
         command.stderr(std::process::Stdio::piped());
@@ -111,11 +115,13 @@ impl JjCommand {
         terminal::takeover_terminal(term).map_err(JjCommandError::new_other)?;
 
         if status.success() {
+            log::debug!("Interactive command succeeded: {}", self.args.join(" "));
             Ok(JjCommandOutput {
                 stdout: "".to_string(),
                 stderr,
             })
         } else {
+            log::error!("Interactive command failed: {} - {}", self.args.join(" "), stderr);
             Err(JjCommandError::new_failed(stderr))
         }
     }
@@ -230,6 +236,20 @@ impl JjCommand {
             args.push("--ignore-immutable");
         }
         Self::_new(&args, global_args, None, ReturnOutput::Stderr)
+    }
+
+    /// Get the full description of a change
+    pub fn get_description(change_id: &str, global_args: GlobalArgs) -> Self {
+        let args = vec![
+            "log",
+            "-r",
+            change_id,
+            "-T",
+            "description",
+            "--no-graph",
+            "--no-pager",
+        ];
+        Self::_new(&args, global_args, None, ReturnOutput::Stdout)
     }
 
     pub fn duplicate(
@@ -651,6 +671,7 @@ impl JjCommand {
     }
 
     pub fn ensure_valid_repo(repository: &str) -> Result<String, JjCommandError> {
+        log::debug!("Validating repository: {}", repository);
         let args = [
             "--repository",
             repository,
@@ -665,12 +686,15 @@ impl JjCommand {
             .map_err(JjCommandError::new_other)?;
 
         if output.status.success() {
-            Ok(String::from_utf8_lossy(&output.stdout)
+            let root = String::from_utf8_lossy(&output.stdout)
                 .to_string()
                 .trim()
-                .to_string())
+                .to_string();
+            log::debug!("Repository validated at: {}", root);
+            Ok(root)
         } else {
             let stderr = String::from_utf8_lossy(&output.stderr).into();
+            log::warn!("Repository validation failed for '{}': {}", repository, stderr);
             Err(JjCommandError::new_failed(stderr))
         }
     }
@@ -768,26 +792,6 @@ pub fn get_workspace_path(repo_root: &str, workspace_name: &str) -> Option<Strin
     None
 }
 
-/// Simple debug logging function
-fn debug_log(msg: &str) {
-    use std::fs::OpenOptions;
-    use std::io::Write;
-    use std::time::SystemTime;
-
-    let timestamp = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-
-    if let Ok(mut file) = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open("/tmp/jjdag.log")
-    {
-        let _ = writeln!(file, "[{}] UPDATE_WS: {}", timestamp, msg);
-    }
-}
-
 /// Update the path for a workspace in jj's workspace_store/index file.
 /// This is necessary after renaming a workspace directory to keep jj's store in sync.
 pub fn update_workspace_path(
@@ -799,16 +803,16 @@ pub fn update_workspace_path(
         .parent()
         .unwrap()
         .join("default");
-    debug_log(&format!(
+    log::debug!(
         "repo_root='{}' workspace='{}' new_path='{}'",
         repo_root.to_string_lossy(),
         workspace_name,
         new_path
-    ));
+    );
     let index_path = repo_root.join(".jj/repo/workspace_store/index");
-    debug_log(&format!("index_path='{}'", index_path.display()));
+    log::debug!("index_path='{}'", index_path.display());
     let contents = std::fs::read(&index_path)?;
-    debug_log(&format!("read {} bytes", contents.len()));
+    log::debug!("read {} bytes", contents.len());
 
     let new_path_bytes = new_path.as_bytes();
     let workspace_name_bytes = workspace_name.as_bytes();
@@ -824,10 +828,10 @@ pub fn update_workspace_path(
     let mut found = false;
 
     while i < contents.len() {
-        debug_log(&format!("parsing at i={}", i));
+        log::debug!("parsing at i={}", i);
         // Check entry start
         if contents.get(i) != Some(&0x0a) {
-            debug_log(&format!("no more entries at i={}", i));
+            log::debug!("no more entries at i={}", i);
             // Copy remaining bytes as-is
             new_contents.extend_from_slice(&contents[i..]);
             break;
@@ -840,7 +844,7 @@ pub fn update_workspace_path(
         let entry_start = i;
         let entry_end = entry_start + entry_len;
 
-        debug_log(&format!("entry_len={} end={}", entry_len, entry_end));
+        log::debug!("entry_len={} end={}", entry_len, entry_end);
         // Parse name field
         if contents.get(i) != Some(&0x0a) {
             new_contents.extend_from_slice(&contents[entry_start - 2..entry_end]);
@@ -854,7 +858,7 @@ pub fn update_workspace_path(
             .get(i..i + name_len)
             .ok_or("Unexpected end of file")?;
         let name = String::from_utf8_lossy(name_bytes);
-        debug_log(&format!("name='{}'", name));
+        log::debug!("name='{}'", name);
         i += name_len;
 
         // Parse path field (skip for now)
@@ -870,14 +874,14 @@ pub fn update_workspace_path(
         i += path_len; // Skip old path bytes
         let old_path =
             String::from_utf8_lossy(&contents[old_path_start..old_path_start + path_len]);
-        debug_log(&format!("old_path='{}'", old_path));
+        log::debug!("old_path='{}'", old_path);
 
-        debug_log(&format!("found name: '{}'", workspace_name));
+        log::debug!("found name: '{}'", workspace_name);
         if name == workspace_name {
-            debug_log(&format!("FOUND '{}', updating path", workspace_name));
+            log::debug!("FOUND '{}', updating path", workspace_name);
             // Found the workspace - write updated entry
             found = true;
-            debug_log(&format!("writing new entry len={}", new_entry_len + 2));
+            log::debug!("writing new entry len={}", new_entry_len + 2);
             new_contents.push(0x0a); // Entry start tag
             new_contents.push(new_entry_len as u8); // Entry length
             new_contents.push(0x0a); // Name field tag
@@ -895,12 +899,12 @@ pub fn update_workspace_path(
     }
 
     if found {
-        debug_log(&format!("writing {} bytes to index", new_contents.len()));
+        log::debug!("writing {} bytes to index", new_contents.len());
         std::fs::write(&index_path, new_contents)?;
-        debug_log("SUCCESS");
+        log::debug!("SUCCESS");
         Ok(())
     } else {
-        debug_log(&format!("FAILED: workspace '{}' not found", workspace_name));
+        log::debug!("FAILED: workspace '{}' not found", workspace_name);
         Err(format!("Workspace '{}' not found in store", workspace_name).into())
     }
 }

@@ -16,33 +16,50 @@ use crate::{
 };
 use ansi_to_tui::IntoText;
 use anyhow::Result;
-use anyhow::anyhow;
+use arboard::Clipboard;
 use crossterm::event::KeyCode;
-use ratatui::{
-    layout::Rect,
-    text::{Line, Text},
-    widgets::ListState,
-};
+use std::fmt;
 
-/// Simple debug logging to file
-fn debug_log(msg: &str) {
-    use std::fs::OpenOptions;
-    use std::io::Write;
-    use std::time::SystemTime;
+/// Wrapper for Clipboard that implements Debug
+pub struct ClipboardWrapper(Option<Clipboard>);
 
-    let timestamp = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
+impl ClipboardWrapper {
+    pub fn new() -> Self {
+        Self(Clipboard::new().ok())
+    }
 
-    if let Ok(mut file) = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open("/tmp/jjdag.log")
-    {
-        let _ = writeln!(file, "[{}] {}", timestamp, msg);
+    pub fn set_text(&mut self, text: String) -> Result<(), arboard::Error> {
+        match &mut self.0 {
+            Some(clipboard) => clipboard.set_text(text),
+            None => Err(arboard::Error::ClipboardNotSupported),
+        }
+    }
+
+    pub fn get_text(&mut self) -> Result<String, arboard::Error> {
+        match &mut self.0 {
+            Some(clipboard) => clipboard.get_text(),
+            None => Err(arboard::Error::ClipboardNotSupported),
+        }
     }
 }
+
+impl fmt::Debug for ClipboardWrapper {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Clipboard").finish()
+    }
+}
+
+impl Default for ClipboardWrapper {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+use ratatui::{
+    layout::Rect,
+    style::{Color, Style},
+    text::{Line, Span, Text},
+    widgets::ListState,
+};
 
 const LOG_LIST_SCROLL_PADDING: usize = 0;
 
@@ -72,7 +89,7 @@ pub struct Model {
     saved_change_id: Option<String>,
     saved_file_path: Option<String>,
     saved_tree_position: Option<TreePosition>,
-    jj_log: JjLog,
+    pub jj_log: JjLog,
     pub log_list: Vec<Text<'static>>,
     pub log_list_state: ListState,
     log_list_tree_positions: Vec<TreePosition>,
@@ -91,9 +108,13 @@ pub struct Model {
     pub text_input: String,
     /// Cursor position in text input (byte index)
     pub text_cursor: usize,
+    /// Track if user has been warned about first line exceeding 50 chars
+    pub description_warning_shown: bool,
     /// Track last click for double-click detection
     last_click_time: Option<std::time::Instant>,
     last_click_pos: Option<(u16, u16)>,
+    /// Clipboard for copy/paste operations
+    clipboard: ClipboardWrapper,
 }
 
 #[derive(Debug)]
@@ -126,8 +147,10 @@ impl Model {
             popup_selection: 0,
             text_input: String::new(),
             text_cursor: 0,
+            description_warning_shown: false,
             last_click_time: None,
             last_click_pos: None,
+            clipboard: ClipboardWrapper::new(),
             display_repository: format_repository_for_display(&repository),
             global_args: GlobalArgs {
                 repository,
@@ -607,6 +630,7 @@ impl Model {
         let Some(change_id) = self.get_selected_change_id() else {
             return self.invalid_selection();
         };
+        log::info!("Abandoning change: {}", change_id);
         let mode = match mode {
             AbandonMode::Default => None,
             AbandonMode::RetainBookmarks => Some("--retain-bookmarks"),
@@ -617,6 +641,7 @@ impl Model {
     }
 
     pub fn jj_absorb(&mut self, mode: AbsorbMode) -> Result<()> {
+        log::info!("Absorbing changes, mode: {:?}", mode);
         let (from_change_id, maybe_into_change_id, maybe_file_path) = match mode {
             AbsorbMode::Default => {
                 let Some(from_change_id) = self.get_selected_change_id() else {
@@ -689,16 +714,30 @@ impl Model {
         };
         let change_id = change_id.to_string();
 
-        // Get the existing description to pre-fill
-        let tree_pos = self.get_selected_tree_position();
-        let existing_desc = self
-            .jj_log
-            .get_tree_commit(&tree_pos)
-            .and_then(|c| c.description_first_line.clone())
-            .unwrap_or_default();
+        // Get the existing description to pre-fill (fetch full multi-line description)
+        let existing_desc =
+            match JjCommand::get_description(&change_id, self.global_args.clone()).run() {
+                Ok(desc) => {
+                    let trimmed = desc.trim();
+                    if trimmed == "(no description set)" {
+                        String::new()
+                    } else {
+                        trimmed.to_string()
+                    }
+                }
+                Err(_) => {
+                    // Fall back to first line if command fails
+                    let tree_pos = self.get_selected_tree_position();
+                    self.jj_log
+                        .get_tree_commit(&tree_pos)
+                        .and_then(|c| c.description_first_line.clone())
+                        .unwrap_or_default()
+                }
+            };
 
         self.text_input = existing_desc;
         self.text_cursor = self.text_input.len();
+        self.description_warning_shown = false;
         self.text_input_location =
             crate::update::TextInputLocation::Description { change_id, mode };
         Ok(())
@@ -712,6 +751,34 @@ impl Model {
             }
             _ => return Ok(()),
         };
+
+        // Check first line length for 50-column rule
+        let first_line = self
+            .text_input
+            .split('\n')
+            .next()
+            .unwrap_or(&self.text_input);
+        let first_line_len = first_line.chars().count();
+
+        if first_line_len > 50 && !self.description_warning_shown {
+            // First line exceeds 50 chars and warning not shown yet
+            self.description_warning_shown = true;
+            self.info_list = Some(Text::from(vec![
+                Line::from(vec![Span::styled(
+                    "WARNING: First line exceeds 50 characters (",
+                    Style::default().fg(Color::Yellow),
+                )]),
+                Line::from(vec![Span::styled(
+                    format!(
+                        "found {}). Press Enter again to submit anyway.",
+                        first_line_len
+                    ),
+                    Style::default().fg(Color::Yellow),
+                )]),
+            ]));
+            return Ok(());
+        }
+
         let message = self.text_input.clone();
         self.text_input_cancel(); // Clear editing state first
 
@@ -979,12 +1046,64 @@ impl Model {
     // ===== Text Input Methods =====
 
     /// Insert a character at the current cursor position
+    /// For description editing: auto-wrap on space if line would exceed 72 chars
     pub fn text_input_char(&mut self, ch: char) {
         if self.text_cursor > self.text_input.len() {
             self.text_cursor = self.text_input.len();
         }
+
+        // For description editing, handle auto-wrap on space for body lines
+        if self.is_description_editing() && ch == ' ' {
+            let (line_start, current_line) = self.get_current_line_to_cursor();
+
+            // Check if we're on a subsequent line (not the first line)
+            let is_first_line = line_start == 0 && !self.text_input.contains('\n');
+            let line_has_newline_before = self.text_input[..line_start].contains('\n');
+
+            if !is_first_line || line_has_newline_before {
+                // We're on a subsequent line, check 72-column limit
+                let line_len = current_line.chars().count();
+                if line_len >= 72 {
+                    // Replace space with newline for auto-wrap
+                    self.text_input.insert(self.text_cursor, '\n');
+                    self.text_cursor += 1;
+                    return;
+                }
+            }
+        }
+
         self.text_input.insert(self.text_cursor, ch);
         self.text_cursor += ch.len_utf8();
+    }
+
+    /// Insert a newline character at cursor position
+    pub fn text_input_newline(&mut self) {
+        self.text_input_char('\n');
+    }
+
+    /// Check if we're currently in description editing mode
+    fn is_description_editing(&self) -> bool {
+        matches!(
+            self.text_input_location,
+            crate::update::TextInputLocation::Description { .. }
+        )
+    }
+
+    /// Get the current line content up to the cursor (for description editing)
+    /// Returns (line_start_pos, current_line_content)
+    fn get_current_line_to_cursor(&self) -> (usize, String) {
+        let text_before_cursor = &self.text_input[..self.text_cursor];
+
+        // Find the start of the current line (after the last newline or beginning)
+        let line_start = text_before_cursor
+            .rfind('\n')
+            .map(|pos| pos + 1)
+            .unwrap_or(0);
+
+        // Get the content from line start to cursor
+        let current_line = &text_before_cursor[line_start..];
+
+        (line_start, current_line.to_string())
     }
 
     /// Delete character before cursor (backspace)
@@ -1041,11 +1160,157 @@ impl Model {
         self.text_cursor = self.text_input.len();
     }
 
+    /// Move cursor up one line (for multi-line text)
+    pub fn text_input_move_up(&mut self) {
+        let text_before_cursor = &self.text_input[..self.text_cursor];
+
+        // Find the start of current line
+        let line_start = text_before_cursor
+            .rfind('\n')
+            .map(|pos| pos + 1)
+            .unwrap_or(0);
+
+        // If we're on the first line, can't move up
+        if line_start == 0 {
+            return;
+        }
+
+        // Calculate column position in current line
+        let col = self.text_cursor - line_start;
+
+        // Find the start of previous line
+        let text_before_line = &self.text_input[..line_start - 1];
+        let prev_line_start = text_before_line.rfind('\n').map(|pos| pos + 1).unwrap_or(0);
+
+        // Calculate end of previous line
+        let prev_line_end = line_start - 1;
+        let prev_line_len = prev_line_end - prev_line_start;
+
+        // Move to same column in previous line, or end of line if shorter
+        let new_col = col.min(prev_line_len);
+        self.text_cursor = prev_line_start + new_col;
+    }
+
+    /// Move cursor down one line (for multi-line text)
+    pub fn text_input_move_down(&mut self) {
+        // Find end of current line
+        let line_end = self.text_input[self.text_cursor..]
+            .find('\n')
+            .map(|pos| self.text_cursor + pos)
+            .unwrap_or(self.text_input.len());
+
+        // If we're on the last line (no newline after), can't move down
+        if line_end == self.text_input.len() {
+            return;
+        }
+
+        // Calculate column position in current line
+        let text_before_cursor = &self.text_input[..self.text_cursor];
+        let line_start = text_before_cursor
+            .rfind('\n')
+            .map(|pos| pos + 1)
+            .unwrap_or(0);
+        let col = self.text_cursor - line_start;
+
+        // Find start and end of next line
+        let next_line_start = line_end + 1;
+        let next_line_end = self.text_input[next_line_start..]
+            .find('\n')
+            .map(|pos| next_line_start + pos)
+            .unwrap_or(self.text_input.len());
+        let next_line_len = next_line_end - next_line_start;
+
+        // Move to same column in next line, or end of line if shorter
+        let new_col = col.min(next_line_len);
+        self.text_cursor = next_line_start + new_col;
+    }
+
+    /// Cut from cursor to end of current line, placing text in clipboard
+    /// If at end of line, deletes the newline (joining with next line)
+    pub fn text_input_cut_to_end(&mut self) {
+        let text_after_cursor = &self.text_input[self.text_cursor..];
+
+        // Find the end of the current line (next newline or end of text)
+        let line_end = if let Some(pos) = text_after_cursor.find('\n') {
+            self.text_cursor + pos
+        } else {
+            self.text_input.len()
+        };
+
+        if self.text_cursor < line_end {
+            // Cursor is before end of line: cut to end of line
+            let cut_text = &self.text_input[self.text_cursor..line_end];
+            let _ = self.clipboard.set_text(cut_text.to_string());
+            self.text_input
+                .replace_range(self.text_cursor..line_end, "");
+        } else if self.text_cursor < self.text_input.len() {
+            // Cursor is at end of line: delete the newline character
+            let _ = self.clipboard.set_text("\n".to_string());
+            self.text_input.remove(self.text_cursor);
+        }
+    }
+
+    /// Copy from cursor to end of current line, placing text in clipboard
+    pub fn text_input_copy_to_end(&mut self) {
+        let text_after_cursor = &self.text_input[self.text_cursor..];
+
+        // Find the end of the current line (next newline or end of text)
+        let end_pos = if let Some(pos) = text_after_cursor.find('\n') {
+            self.text_cursor + pos
+        } else {
+            self.text_input.len()
+        };
+
+        if self.text_cursor < end_pos {
+            // Get the text to copy
+            let copy_text = &self.text_input[self.text_cursor..end_pos];
+
+            // Copy to clipboard
+            let _ = self.clipboard.set_text(copy_text.to_string());
+        }
+    }
+
+    /// Paste text from clipboard at cursor position
+    pub fn text_input_paste(&mut self) {
+        if let Ok(text) = self.clipboard.get_text() {
+            self.text_input.insert_str(self.text_cursor, &text);
+            self.text_cursor += text.len();
+        }
+    }
+
+    /// Move cursor to start of current line
+    pub fn text_input_move_line_start(&mut self) {
+        let text_before_cursor = &self.text_input[..self.text_cursor];
+
+        // Find the start of the current line (after the last newline, or beginning)
+        let line_start = text_before_cursor
+            .rfind('\n')
+            .map(|pos| pos + 1)
+            .unwrap_or(0);
+
+        self.text_cursor = line_start;
+    }
+
+    /// Move cursor to end of current line
+    pub fn text_input_move_line_end(&mut self) {
+        let text_after_cursor = &self.text_input[self.text_cursor..];
+
+        // Find the end of the current line (next newline, or end of text)
+        let line_end = if let Some(pos) = text_after_cursor.find('\n') {
+            self.text_cursor + pos
+        } else {
+            self.text_input.len()
+        };
+
+        self.text_cursor = line_end;
+    }
+
     /// Cancel text input and close popup
     pub fn text_input_cancel(&mut self) {
         self.text_input_location = crate::update::TextInputLocation::None;
         self.text_input.clear();
         self.text_cursor = 0;
+        self.description_warning_shown = false;
     }
 
     /// Submit text input and execute the associated action based on location
@@ -1091,6 +1356,173 @@ impl Model {
     fn bookmark_rename_submit(&mut self, old_name: String, new_name: String) -> Result<()> {
         let cmd = JjCommand::bookmark_rename(&old_name, &new_name, self.global_args.clone());
         self.queue_jj_command(cmd)
+    }
+
+    /// Calculate screen coordinates for the terminal cursor based on current text input state.
+    /// Returns (x, y) screen coordinates or None if no text input is active.
+    pub fn calculate_cursor_position(&self) -> Option<(u16, u16)> {
+        match &self.text_input_location {
+            crate::update::TextInputLocation::None => None,
+            crate::update::TextInputLocation::Revset { .. } => {
+                self.calculate_revset_cursor_position()
+            }
+            crate::update::TextInputLocation::Bookmark { .. } => {
+                self.calculate_bookmark_cursor_position()
+            }
+            crate::update::TextInputLocation::Description { .. } => {
+                self.calculate_description_cursor_position()
+            }
+            crate::update::TextInputLocation::Popup { .. } => {
+                self.calculate_popup_cursor_position()
+            }
+        }
+    }
+
+    /// Calculate cursor position for revset editing in the header.
+    /// Header format: "repository: {repo}  revset: {input}"
+    fn calculate_revset_cursor_position(&self) -> Option<(u16, u16)> {
+        // Prefix: "repository: " (12) + repo + "  " (2) + "revset: " (8) = 22 + repo.len()
+        let prefix_len = 22 + self.display_repository.len();
+        let cursor_x = prefix_len + self.text_cursor;
+        Some((cursor_x as u16, 0))
+    }
+
+    /// Calculate cursor position for bookmark creation in the log list.
+    /// The bookmark is injected at the selected commit line with format: " [bookmark]"
+    fn calculate_bookmark_cursor_position(&self) -> Option<(u16, u16)> {
+        let selected_idx = self.log_list_state.selected()?;
+        let offset = self.log_list_state.offset();
+
+        // Calculate Y position within the list
+        let relative_row = selected_idx.saturating_sub(offset);
+        let y = self.log_list_layout.y + relative_row as u16;
+
+        // X position: need to account for the prefix before the bookmark text
+        // This is approximate - we need to know the line's content up to the bookmark
+        // The bookmark is appended after the commit line with " [" prefix
+        let line = self.log_list.get(selected_idx)?;
+
+        // Find where change_id ends to calculate the prefix
+        // Format is typically: graph chars + symbol + " " + change_id + " " + ...
+        // We append " [" + input + "]" at the end
+        // IMPORTANT: Only measure the first line since bookmark is injected there,
+        // and strip ANSI codes since they don't occupy screen space
+        let first_line = line.lines.first()?;
+        let first_line_text = first_line.to_string();
+        let first_line_visible = strip_ansi(&first_line_text);
+        let x = self.log_list_layout.x + first_line_visible.len() as u16 + self.text_cursor as u16;
+
+        Some((x, y))
+    }
+
+    /// Calculate cursor position for description editing in the log list.
+    /// The description is rendered across multiple lines below the selected commit.
+    fn calculate_description_cursor_position(&self) -> Option<(u16, u16)> {
+        let selected_idx = self.log_list_state.selected()?;
+        let offset = self.log_list_state.offset();
+        let relative_row = selected_idx.saturating_sub(offset);
+
+        // Find which line contains the cursor
+        let mut current_pos = 0;
+        let mut cursor_line_idx = 0;
+        let mut cursor_offset_in_line = self.text_cursor;
+        let mut cursor_found = false;
+
+        // Log the input state
+        let lines_vec: Vec<&str> = self.text_input.lines().collect();
+        log::debug!(
+            "CURSOR_DEBUG: text_input={:?}, text_cursor={}, lines_count={}",
+            self.text_input,
+            self.text_cursor,
+            lines_vec.len()
+        );
+        for (i, line) in lines_vec.iter().enumerate() {
+            log::debug!("CURSOR_DEBUG: line[{}]={:?}, len={}", i, line, line.len());
+        }
+
+        for (idx, line) in self.text_input.lines().enumerate() {
+            let line_end = current_pos + line.len();
+            log::debug!(
+                "CURSOR_DEBUG: loop idx={}, line={:?}, current_pos={}, line_end={}, text_cursor={}, condition={}",
+                idx,
+                line,
+                current_pos,
+                line_end,
+                self.text_cursor,
+                if self.text_cursor <= line_end {
+                    "HIT"
+                } else {
+                    "miss"
+                }
+            );
+            if self.text_cursor <= line_end {
+                cursor_line_idx = idx;
+                cursor_offset_in_line = self.text_cursor - current_pos;
+                cursor_found = true;
+                log::debug!(
+                    "CURSOR_DEBUG: FOUND on line {}, offset_in_line={}",
+                    cursor_line_idx,
+                    cursor_offset_in_line
+                );
+                break;
+            }
+            current_pos = line_end + 1; // +1 for newline
+        }
+
+        // Handle case where cursor is at or past the end of the last line
+        // This happens when there's a trailing newline (e.g., after pressing Shift+Enter)
+        // lines() doesn't return an empty string for trailing newlines, so we need to check
+        // if the cursor is at the position where a new empty line would start
+        if self.text_cursor >= current_pos {
+            // Cursor is at/past the end of the last line, put it on a new empty line
+            cursor_line_idx = self.text_input.lines().count();
+            cursor_offset_in_line = 0;
+            log::debug!(
+                "CURSOR_DEBUG: applied fix, cursor >= current_pos ({} >= {}), new_line_idx={}, offset=0",
+                self.text_cursor,
+                current_pos,
+                cursor_line_idx
+            );
+        }
+
+        // Y position: selected row + 1 (for prefix line) + cursor line index
+        let y = self.log_list_layout.y + relative_row as u16 + cursor_line_idx as u16;
+
+        // X position: prefix + cursor offset in line
+        // Prefix: "  → " = 4 characters
+        let prefix_len = 4;
+        let x = self.log_list_layout.x + prefix_len + cursor_offset_in_line as u16;
+
+        log::debug!(
+            "CURSOR_DEBUG: FINAL cursor_line_idx={}, cursor_offset_in_line={}, x={}, y={}",
+            cursor_line_idx,
+            cursor_offset_in_line,
+            x,
+            y
+        );
+
+        Some((x, y))
+    }
+
+    /// Calculate cursor position for popup text prompts.
+    fn calculate_popup_cursor_position(&self) -> Option<(u16, u16)> {
+        let area = self.log_list_layout;
+
+        // Popup dimensions (from render_text_prompt_popup)
+        let popup_width = (area.width * 2 / 3).min(60).max(40);
+        let popup_height = 7u16;
+        let popup_x = (area.width - popup_width) / 2;
+        let popup_y = (area.height - popup_height) / 2;
+
+        // Input line is at row 2 within popup (0: title, 1: spacer, 2: input)
+        let input_y = popup_y + 2;
+
+        // X position: popup x + "> " prefix + cursor position
+        let input_x = popup_x + 2; // border + padding
+        let prefix_len = 2; // "> "
+        let x = input_x + prefix_len + self.text_cursor as u16;
+
+        Some((x, input_y))
     }
 
     fn metaedit_set_author(&mut self, change_id: String, author: String) -> Result<()> {
@@ -1146,6 +1578,7 @@ impl Model {
     }
 
     pub fn jj_bookmark_delete(&mut self, _term: Term) -> Result<()> {
+        log::info!("Opening bookmark delete popup");
         // Fetch bookmarks and open popup
         let output = JjCommand::bookmark_list(self.global_args.clone()).run()?;
         let bookmarks: Vec<String> = output
@@ -1388,6 +1821,7 @@ impl Model {
     }
 
     pub fn jj_commit(&mut self, term: Term) -> Result<()> {
+        log::info!("Committing changes");
         let maybe_file_path = self.get_selected_file_path();
         let cmd = JjCommand::commit(maybe_file_path, self.global_args.clone(), term);
         self.queue_jj_command(cmd)
@@ -1437,6 +1871,7 @@ impl Model {
     }
 
     pub fn jj_edit(&mut self, mode: EditMode) -> Result<()> {
+        log::info!("Editing change, mode: {:?}", mode);
         let Some(change_id) = self.get_selected_change_id() else {
             return self.invalid_selection();
         };
@@ -1447,45 +1882,39 @@ impl Model {
 
     pub fn enter_pressed(&mut self) -> Result<()> {
         let tree_pos = self.get_selected_tree_position();
-        debug_log(&format!(
-            "enter_pressed called, tree_pos.len() = {}",
-            tree_pos.len()
-        ));
+        log::debug!("enter_pressed called, tree_pos.len() = {}", tree_pos.len());
 
         // If on a commit (revision title), edit that revision
         if tree_pos.len() == 1 {
-            debug_log("On commit, calling jj_edit");
+            log::debug!("On commit, calling jj_edit");
             return self.jj_edit(EditMode::Default);
         }
 
         // If on a diff line (tree_pos.len() == 4), get line number and parent file
         let (file_path, line_num) = if tree_pos.len() == 4 {
-            debug_log("On diff line (len=4), getting line number");
+            log::debug!("On diff line (len=4), getting line number");
             // Parse line number first (requires &mut self)
             let line_num = self.get_diff_line_number(&tree_pos);
-            debug_log(&format!("Got line_num: {:?}", line_num));
+            log::debug!("Got line_num: {:?}", line_num);
             // Then get file path (requires &self)
             let file_tree_pos: TreePosition = tree_pos[..2].to_vec();
             let Some(path) = self.get_file_path(file_tree_pos) else {
-                debug_log("Failed to get file path");
+                log::debug!("Failed to get file path");
                 return self.invalid_selection();
             };
-            debug_log(&format!("Got file path: {}, line: {:?}", path, line_num));
+            log::debug!("Got file path: {}, line: {:?}", path, line_num);
             (path.to_string(), line_num)
         } else {
             // On a file or hunk header - no specific line
             let Some(path) = self.get_selected_file_path() else {
-                debug_log("Failed to get selected file path");
+                log::debug!("Failed to get selected file path");
                 return self.invalid_selection();
             };
-            debug_log(&format!("On file/hunk, path: {}", path));
+            log::debug!("On file/hunk, path: {}", path);
             (path.to_string(), None)
         };
 
-        debug_log(&format!(
-            "Final: file_path={}, line_num={:?}",
-            file_path, line_num
-        ));
+        log::debug!("Final: file_path={}, line_num={:?}", file_path, line_num);
 
         // Get the change_id for this file's revision
         let Some(change_id) = self.get_selected_change_id() else {
@@ -1509,7 +1938,7 @@ impl Model {
         };
 
         if change_id == "@" || self.is_selected_working_copy() {
-            debug_log(&format!("Opening working copy file: {}", file_arg));
+            log::debug!("Opening working copy file: {}", file_arg);
             // Open working copy file directly - spawn and forget (non-blocking)
             let full_path = std::path::Path::new(&self.global_args.repository).join(&file_arg);
             std::process::Command::new(editor_bin)
@@ -1552,7 +1981,7 @@ impl Model {
             std::fs::write(&temp_path, &output.stdout)?;
 
             // Open the temp file in editor
-            debug_log(&format!("Opening temp file: {}", temp_path.display()));
+            log::debug!("Opening temp file: {}", temp_path.display());
             std::process::Command::new(editor_bin)
                 .args(&editor_args)
                 .arg(&temp_path)
@@ -1574,11 +2003,13 @@ impl Model {
         let Some(change_id) = self.get_selected_change_id() else {
             return self.invalid_selection();
         };
+        log::info!("Opening evolog for change: {}", change_id);
         let cmd = JjCommand::evolog(change_id, patch, self.global_args.clone(), term);
         self.queue_jj_command(cmd)
     }
 
     pub fn jj_file_track(&mut self, _term: Term) -> Result<()> {
+        log::info!("Opening file track popup");
         // Fetch untracked files and open popup
         let output = JjCommand::file_list_untracked(self.global_args.clone()).run()?;
         let untracked_files: Vec<String> = output
@@ -1605,11 +2036,13 @@ impl Model {
         if !self.is_selected_working_copy() {
             return self.invalid_selection();
         }
+        log::info!("Untracking file: {}", file_path);
         let cmd = JjCommand::file_untrack(file_path, self.global_args.clone());
         self.queue_jj_command(cmd)
     }
 
     pub fn jj_git_fetch(&mut self, mode: GitFetchMode, _term: Term) -> Result<()> {
+        log::info!("Git fetch, mode: {:?}", mode);
         match mode {
             GitFetchMode::Default => {
                 let cmd = JjCommand::git_fetch(None, None, self.global_args.clone());
@@ -1690,6 +2123,7 @@ impl Model {
     }
 
     pub fn jj_git_push(&mut self, mode: GitPushMode, _term: Term) -> Result<()> {
+        log::info!("Git push, mode: {:?}", mode);
         let (flag, value) = match mode {
             GitPushMode::Default => (None, None),
             GitPushMode::All => (Some("--all"), None),
@@ -1814,6 +2248,7 @@ impl Model {
         let Some(change_id) = self.get_selected_change_id() else {
             return self.invalid_selection();
         };
+        log::info!("Metaedit: {:?} for change {}", action, change_id);
 
         match action {
             MetaeditAction::UpdateChangeId => {
@@ -1878,6 +2313,7 @@ impl Model {
     }
 
     pub fn jj_new(&mut self, mode: NewMode) -> Result<()> {
+        log::info!("Creating new change, mode: {:?}", mode);
         let cmd = match mode {
             NewMode::Default => {
                 let Some(change_id) = self.get_selected_change_id() else {
@@ -1955,6 +2391,7 @@ impl Model {
     }
 
     pub fn jj_parallelize(&mut self, source: ParallelizeSource, _term: Term) -> Result<()> {
+        log::info!("Parallelizing changes, source: {:?}", source);
         match source {
             ParallelizeSource::Range => {
                 let Some(from_change_id) = self.get_saved_change_id() else {
@@ -1994,6 +2431,11 @@ impl Model {
         destination_type: RebaseDestinationType,
         destination: RebaseDestination,
     ) -> Result<()> {
+        log::info!(
+            "Rebasing change, source: {:?}, destination: {:?}",
+            source_type,
+            destination_type
+        );
         let Some(source_change_id) = self.get_saved_change_id() else {
             return self.invalid_selection();
         };
@@ -2029,6 +2471,7 @@ impl Model {
     }
 
     pub fn jj_rebase_selected_branch_onto_trunk(&mut self) -> Result<()> {
+        log::info!("Rebasing selected branch onto trunk");
         let Some(source_change_id) = self.get_selected_change_id() else {
             return self.invalid_selection();
         };
@@ -2044,6 +2487,7 @@ impl Model {
     }
 
     pub fn jj_rebase_selected_branch_onto_trunk_sync(&mut self) -> Result<()> {
+        log::info!("Rebasing selected branch onto trunk (sync)");
         let Some(source_change_id) = self.get_selected_change_id() else {
             return self.invalid_selection();
         };
@@ -2060,6 +2504,7 @@ impl Model {
     }
 
     pub fn jj_redo(&mut self) -> Result<()> {
+        log::info!("Redoing operation");
         let cmd = JjCommand::redo(self.global_args.clone());
         self.queue_jj_command(cmd)
     }
@@ -2206,6 +2651,7 @@ impl Model {
         let Some(change_id) = self.get_selected_change_id() else {
             return self.invalid_selection();
         };
+        log::info!("Splitting change: {}", change_id);
         let cmd = JjCommand::split(change_id, "Split: part 1", self.global_args.clone(), term);
         self.queue_jj_command(cmd)
     }
@@ -2257,6 +2703,7 @@ impl Model {
     }
 
     pub fn jj_squash(&mut self, mode: SquashMode, term: Term) -> Result<()> {
+        log::info!("Squashing changes, mode: {:?}", mode);
         let cmd = match mode {
             SquashMode::Default => {
                 let tree_pos = self.get_selected_tree_position();
@@ -2302,11 +2749,13 @@ impl Model {
     }
 
     pub fn jj_status(&mut self, term: Term) -> Result<()> {
+        log::info!("Showing status");
         let cmd = JjCommand::status(self.global_args.clone(), term);
         self.queue_jj_command(cmd)
     }
 
     pub fn jj_undo(&mut self) -> Result<()> {
+        log::info!("Undoing last operation");
         let cmd = JjCommand::undo(self.global_args.clone());
         self.queue_jj_command(cmd)
     }
@@ -2387,11 +2836,13 @@ impl Model {
     }
 
     pub fn jj_workspace_list(&mut self) -> Result<()> {
+        log::info!("Listing workspaces");
         let cmd = JjCommand::workspace_list(self.global_args.clone());
         self.queue_jj_command(cmd)
     }
 
     pub fn jj_workspace_root(&mut self) -> Result<()> {
+        log::info!("Showing workspace root");
         let cmd = JjCommand::workspace_root(self.global_args.clone());
         self.queue_jj_command(cmd)
     }
@@ -2415,6 +2866,7 @@ impl Model {
     }
 
     pub fn jj_workspace_add(&mut self, path: &str, term: Term) -> Result<()> {
+        log::info!("Adding workspace at path: {}", path);
         let cmd = JjCommand::workspace_add(path, self.global_args.clone(), term);
         self.queue_jj_command(cmd)
     }
@@ -2435,6 +2887,7 @@ impl Model {
     /// Power workspace add: atomically performs scoop-up (if needed) and creates sibling workspace.
     /// This is called when the user submits the workspace name from the text prompt.
     pub fn jj_workspace_power_add(&mut self, new_workspace_name: &str, term: Term) -> Result<()> {
+        log::info!("Power workspace add: {}", new_workspace_name);
         // Check current workspace count
         let output = JjCommand::workspace_list(self.global_args.clone()).run()?;
         let workspaces: Vec<String> = output
@@ -2491,10 +2944,10 @@ impl Model {
                 &workspace_dir_string,
             );
 
-            debug_log(&format!(
+            log::debug!(
                 "New global repository location: {}",
                 self.global_args.repository
-            ));
+            );
         }
 
         // Create the new sibling workspace
@@ -2504,6 +2957,7 @@ impl Model {
     }
 
     pub fn jj_workspace_forget(&mut self) -> Result<()> {
+        log::info!("Opening workspace forget popup");
         // Fetch workspaces and open popup
         let output = JjCommand::workspace_list(self.global_args.clone()).run()?;
         let workspaces: Vec<String> = output
@@ -2527,6 +2981,7 @@ impl Model {
     }
 
     pub fn jj_workspace_update_stale_start(&mut self) -> Result<()> {
+        log::info!("Opening workspace update stale popup");
         // Fetch workspaces and open popup
         let output = JjCommand::workspace_list(self.global_args.clone()).run()?;
         let workspaces: Vec<String> = output

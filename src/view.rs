@@ -1,4 +1,4 @@
-use crate::model::Model;
+use crate::{log_tree::strip_ansi, model::Model};
 
 use ratatui::{
     Frame,
@@ -13,32 +13,8 @@ pub const SAVED_SELECTION_COLOR: Color = Color::Rgb(33, 35, 45);
 
 /// Standard style for normal text in input fields
 pub const INPUT_STYLE: Style = Style::new().fg(Color::Yellow);
-/// Standard style for the cursor character (blue background)
-pub const CURSOR_STYLE: Style = Style::new().bg(Color::Blue).fg(Color::White);
-
-/// Render text with an overlay cursor at the given position.
-/// Returns spans: [before_cursor, cursor_char_with_bg, after_cursor]
-pub fn render_text_with_cursor(
-    text: &str,
-    cursor_pos: usize,
-    normal_style: Style,
-    cursor_style: Style,
-) -> Vec<Span<'static>> {
-    let cursor_pos = cursor_pos.min(text.len());
-    let (before, after) = text.split_at(cursor_pos);
-    let after_char = after.chars().next().unwrap_or(' ');
-    let after_rest = &after[after_char.len_utf8().min(after.len())..];
-
-    let mut spans = Vec::with_capacity(3);
-    if !before.is_empty() {
-        spans.push(Span::styled(before.to_string(), normal_style));
-    }
-    spans.push(Span::styled(after_char.to_string(), cursor_style));
-    if !after_rest.is_empty() {
-        spans.push(Span::styled(after_rest.to_string(), normal_style));
-    }
-    spans
-}
+/// Style for text beyond column limits (grayed out)
+pub const GRAYED_OUT_STYLE: Style = Style::new().fg(Color::DarkGray);
 
 pub fn view(model: &mut Model, frame: &mut Frame) {
     let header = render_header(model);
@@ -57,6 +33,11 @@ pub fn view(model: &mut Model, frame: &mut Frame) {
         )
     {
         render_popup(model, frame, model.current_popup.as_ref(), frame.area());
+    }
+
+    // Set the terminal cursor position for text input
+    if let Some((x, y)) = model.calculate_cursor_position() {
+        frame.set_cursor_position(ratatui::layout::Position::new(x, y));
     }
 }
 
@@ -87,14 +68,8 @@ fn render_header(model: &Model) -> Paragraph<'_> {
         model.text_input_location,
         crate::update::TextInputLocation::Revset { .. }
     ) {
-        // Show inline editing with cursor
-        let cursor_spans = render_text_with_cursor(
-            &model.text_input,
-            model.text_cursor,
-            INPUT_STYLE,
-            CURSOR_STYLE,
-        );
-        header_spans.extend(cursor_spans);
+        // Show inline editing (real cursor is rendered via frame.set_cursor_position)
+        header_spans.push(Span::styled(&model.text_input, INPUT_STYLE));
     } else {
         header_spans.push(Span::styled(
             &model.revset,
@@ -120,7 +95,8 @@ fn render_log_list(model: &Model) -> List<'static> {
         .scroll_padding(model.log_list_scroll_padding)
 }
 
-/// When bookmark editing is active, inject the virtual bookmark into the selected commit's line
+/// When bookmark editing is active, inject the virtual bookmark into the selected commit's line.
+/// The real cursor is rendered via terminal ANSI codes, not as fake text.
 fn inject_virtual_bookmark(model: &Model, log_items: &mut [ratatui::text::Text<'static>]) {
     let editing_change_id = match &model.text_input_location {
         crate::update::TextInputLocation::Bookmark { change_id } => change_id,
@@ -141,31 +117,54 @@ fn inject_virtual_bookmark(model: &Model, log_items: &mut [ratatui::text::Text<'
 
     // Create a new line with the virtual bookmark injected
     if let Some(first_line) = text.lines.first_mut() {
-        // Render bookmark name with cursor
-        let bookmark_spans = render_text_with_cursor(
-            &model.text_input,
-            model.text_cursor,
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-            Style::default()
-                .bg(Color::Blue)
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
-        );
+        // Add the bookmark text - real cursor is rendered via ANSI codes
+        let style = Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD);
 
         first_line.spans.push(Span::raw(" ["));
-        first_line.spans.extend(bookmark_spans);
-        first_line.spans.push(Span::styled(
-            "]",
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        ));
+        first_line
+            .spans
+            .push(Span::styled(model.text_input.clone(), style));
+        first_line.spans.push(Span::styled("]", style));
+    }
+}
+
+/// Strip ANSI codes from all spans in a line
+fn strip_ansi_from_line(line: &Line<'_>) -> Line<'static> {
+    let clean_spans: Vec<Span<'static>> = line
+        .spans
+        .iter()
+        .map(|span| {
+            let clean_content = strip_ansi(&span.content);
+            Span::styled(clean_content, span.style)
+        })
+        .collect();
+    Line::from(clean_spans)
+}
+
+/// Render a single line of description with column limit styling.
+/// The real cursor is rendered via terminal ANSI codes, not inserted text.
+fn render_description_line(line_text: &str, line_idx: usize) -> Vec<Span<'static>> {
+    let col_limit = if line_idx == 0 { 50 } else { 72 };
+
+    if line_text.is_empty() {
+        return Vec::new();
+    }
+
+    if line_text.len() <= col_limit {
+        vec![Span::styled(line_text.to_string(), INPUT_STYLE)]
+    } else {
+        let (within, beyond) = line_text.split_at(col_limit);
+        vec![
+            Span::styled(within.to_string(), INPUT_STYLE),
+            Span::styled(beyond.to_string(), GRAYED_OUT_STYLE),
+        ]
     }
 }
 
 /// When description editing is active, replace the description line with the user's input
+/// Displays actual multi-line descriptions with proper indentation
 fn inject_virtual_description(model: &Model, log_items: &mut [ratatui::text::Text<'static>]) {
     if let crate::update::TextInputLocation::Description { .. } = &model.text_input_location {
         let Some(selected_idx) = model.log_list_state.selected() else {
@@ -176,33 +175,44 @@ fn inject_virtual_description(model: &Model, log_items: &mut [ratatui::text::Tex
         };
 
         // Get the input text (show placeholder if empty)
+        // Strip any ANSI codes that might have been included
         let input_text = if model.text_input.is_empty() {
             "(no description set)".to_string()
         } else {
-            model.text_input.clone()
+            strip_ansi(&model.text_input)
         };
 
-        // Replace line 1 (description line) keeping the prefix, or add it if not present
-        if text.lines.len() >= 2 {
-            // Keep the first span (graph prefix like "│  " or "   ")
-            let prefix_span = if !text.lines[1].spans.is_empty() {
-                text.lines[1].spans[0].clone()
-            } else {
-                Span::raw("  ")
-            };
+        // Split input into lines
+        let desc_lines: Vec<&str> = input_text.split('\n').collect();
 
-            let desc_spans =
-                render_text_with_cursor(&input_text, model.text_cursor, INPUT_STYLE, CURSOR_STYLE);
-            let mut all_spans = vec![prefix_span, Span::raw(" ")];
-            all_spans.extend(desc_spans);
-            text.lines[1] = Line::from(all_spans);
+        // Get the prefix from the existing description line (for graph indentation)
+        // Strip ANSI codes to avoid rendering them as text
+        let prefix_content = if text.lines.len() >= 2 && !text.lines[1].spans.is_empty() {
+            strip_ansi(&text.lines[1].spans[0].content)
         } else {
-            let desc_spans =
-                render_text_with_cursor(&input_text, model.text_cursor, INPUT_STYLE, CURSOR_STYLE);
-            let mut all_spans = vec![Span::raw("  ")];
-            all_spans.extend(desc_spans);
-            text.lines.push(Line::from(all_spans));
+            "  ".to_string()
+        };
+        let prefix_span = Span::raw(prefix_content);
+
+        // Build new lines: keep line 0 (graph + change_id), then add description lines
+        let mut new_lines: Vec<Line<'static>> = Vec::new();
+
+        // Keep the first line (graph + change_id) but strip ANSI codes
+        if !text.lines.is_empty() {
+            let clean_line = strip_ansi_from_line(&text.lines[0]);
+            new_lines.push(clean_line);
         }
+
+        // Add description lines (real cursor is rendered via ANSI codes)
+        for (line_idx, line_text) in desc_lines.iter().enumerate() {
+            let desc_spans = render_description_line(line_text, line_idx);
+            let mut all_spans = vec![prefix_span.clone(), Span::raw(" ")];
+            all_spans.extend(desc_spans);
+            new_lines.push(Line::from(all_spans));
+        }
+
+        // Replace the text lines
+        text.lines = new_lines;
     }
 }
 
@@ -377,31 +387,18 @@ fn render_text_prompt_popup(
     let title = format!(" {} ", prompt);
     let help_line = "Enter: confirm | Esc: cancel";
 
-    // Build input line with cursor positioned at text_cursor
+    // Build input line - real cursor is rendered via frame.set_cursor_position()
     let mut input_line = vec![Span::raw("> ")];
-    let cursor_pos = model.text_cursor.min(model.text_input.len());
 
     if model.text_input.is_empty() {
-        // Show placeholder with cursor on first character
-        let first_char = placeholder.chars().next().unwrap_or(' ');
-        let rest = &placeholder[first_char.len_utf8().min(placeholder.len())..];
-
+        // Show placeholder in gray
         input_line.push(Span::styled(
-            first_char.to_string(),
-            Style::default().bg(Color::Blue).fg(Color::White),
+            placeholder.to_string(),
+            Style::default().fg(Color::DarkGray),
         ));
-        if !rest.is_empty() {
-            input_line.push(Span::styled(rest, Style::default().fg(Color::DarkGray)));
-        }
     } else {
-        // Split text at cursor position with overlay cursor
-        let cursor_spans = render_text_with_cursor(
-            &model.text_input,
-            cursor_pos,
-            Style::default(),
-            CURSOR_STYLE,
-        );
-        input_line.extend(cursor_spans);
+        // Show input text
+        input_line.push(Span::styled(model.text_input.clone(), Style::default()));
     }
 
     let mut lines = vec![

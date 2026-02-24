@@ -6,9 +6,12 @@ edition = "2024"
 [dependencies]
 ansi-to-tui = "8.0.1"
 anyhow = "1.0.101"
+arboard = "3.5.0"
 clap = { version = "4.5.57", features = ["derive"] }
+chrono = "0.4"
 crossterm = "0.29.0"
 indexmap = "2.13.0"
+log = { version = "0.4", features = ["std"] }
 ratatui = "0.30.0"
 regex = "1.12.3"
 tempfile = "3.25.0"
