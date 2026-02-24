@@ -636,7 +636,13 @@ fn handle_key(model: &mut Model, key: event::KeyEvent) -> Option<Message> {
         KeyCode::Char('L') => Some(Message::SetRevset),
         KeyCode::Char('I') => Some(Message::ToggleIgnoreImmutable),
         KeyCode::Char('?') => Some(Message::ShowHelp),
-        KeyCode::Enter => Some(Message::EnterPressed),
+        KeyCode::Enter => {
+            if model.has_pending_command_keys() {
+                model.handle_command_key(key.code)
+            } else {
+                Some(Message::EnterPressed)
+            }
+        }
         _ => model.handle_command_key(key.code),
     }
 }
