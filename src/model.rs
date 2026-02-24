@@ -1530,7 +1530,8 @@ impl Model {
             // Get file content at this revision
             let output = std::process::Command::new("jj")
                 .args([
-                    "cat",
+                    "file",
+                    "show",
                     "--color=never",
                     "--repository",
                     &self.global_args.repository,

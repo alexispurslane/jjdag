@@ -86,8 +86,8 @@ cargo install --path .
 2. **Press `?`** to show the help overlay with all available commands.
 
 3. **Navigation**:
-   - `j` / `k` — Move up/down in the log tree
-   - `h` / `l` — Collapse/expand commits
+   - `j` / `k` / `h` / `l` / `C-n` / `C-p` — Move up/down in the log tree
+   - Tab — Collapse/expand commits
    - Enter — Select a commit or open a file
    - Mouse left-click — Select
    - Mouse right-click — Toggle folding
@@ -100,8 +100,8 @@ cargo install --path .
    - `uu` — Undo last operation
    - `rr` — Redo
    - `ee` — Edit (checkout) revision
-   - `ggp` — Git push (with subcommands like `a` for all, `t` for tracked)
-   - `ggf` — Git fetch
+   - `gpp` — Git push
+   - `gfa` — Git fetch
 
 5. **Multi-Key Sequences**:
    jjdag uses Magit-style key sequences. Type the first key, wait for the popup, then type the next key:
@@ -115,22 +115,25 @@ cargo install --path .
 ## Supported jj Commands
 
 ### Bookmarks
-- `bookmark create`, `delete`, `forget`, `move`, `rename`, `set`, `track`, `untrack`, `list`
+- `bookmark create`, `delete`, `forget`, `move`, `rename`, `set`, `track`, `untrack`
 
 ### Commits & History
-- `abandon`, `absorb`, `commit`, `describe`, `duplicate`, `edit`, `new`, `next`, `prev`, `rebase`, `redo`, `restore`, `revert`, `sign`, `simplify-parents`, `squash`, `undo`, `unsign`
+- `abandon`, `absorb`, `commit`, `describe`, `duplicate`, `edit`, `new`, `next`, `prev`, `rebase`, `redo`, `restore`, `revert`, `sign`, `simplify-parents`, `split`, `squash`, `undo`, `unsign`
 
-### Diff & File
-- `diff`, `file track`, `file untrack`, `interdiff`
+### View (Diff) & File
+- `view` (diff), `file track`, `file untrack`, `interdiff`
 
 ### Git
 - `git fetch`, `git push`
+
+### Metaedit
+- `metaedit` (update change-id, author, timestamp; set author/timestamp; force rewrite)
 
 ### Other
 - `evolog`, `parallelize`, `resolve`, `status`
 
 ### Workspace (Power Workflow)
-- `workspace add`, `workspace forget`, `workspace list`, `workspace rename`, `workspace root`
+- `workspace add`, `workspace forget`, `workspace list`, `workspace moveto`, `workspace rename`, `workspace root`, `workspace update-stale`
 
 ---
 
