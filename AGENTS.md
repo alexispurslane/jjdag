@@ -22,3 +22,24 @@ This is a list of instructions to correct common mistakes / misconceptions agent
   - `global_args.repository` points to the current workspace directory, not the project root
   - Path calculations must account for this nesting
 - **Agent Working Directory**: The agent's shell always starts at the project root (`jjdag/`), not inside `test_env/`. Use explicit paths like `jjdag/test_env/` when referencing test files.
+- **Early Exit State Tracking**: When using early exits (break, return, continue) in loops, pay attention to post-loop invariants:
+  - Never early break/return until AFTER verifying subsequent logic won't be affected
+  - Audit every variable left behind after an early exit and verify assumptions made by code after the break still hold
+  - **Pattern**: If you must break out of a loop early, set a loop-body-local exit flag in the condition that should trigger the break, then break on that condition flag at the end of that loop iteration, after it's done all of its post-loop-iteration updates:
+  ```rust
+  for (idx, line) in lines_vec.iter().enumerate() {
+    let line_end = current_pos + line.len();
+
+    let mut cursor_found = false; // loop exit condition flag!
+    if self.text_cursor <= line_end {
+        // we need to exit, but we DON'T BREAK HERE
+        cursor_found = true; // isntead, we set the flag
+    }
+    
+    current_pos = line_end + 1; // now, we let our post-loop-iteration exit code run
+    
+    if cursor_found {
+        break; // then we break
+    }
+  }
+  ```

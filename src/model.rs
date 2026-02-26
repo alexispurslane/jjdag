@@ -1426,10 +1426,9 @@ impl Model {
         let mut current_pos = 0;
         let mut cursor_line_idx = 0;
         let mut cursor_offset_in_line = self.text_cursor;
-        let mut cursor_found = false;
 
         // Log the input state
-        let lines_vec: Vec<&str> = self.text_input.lines().collect();
+        let lines_vec: Vec<&str> = self.text_input.split('\n').collect();
         log::debug!(
             "CURSOR_DEBUG: text_input={:?}, text_cursor={}, lines_count={}",
             self.text_input,
@@ -1440,7 +1439,7 @@ impl Model {
             log::debug!("CURSOR_DEBUG: line[{}]={:?}, len={}", i, line, line.len());
         }
 
-        for (idx, line) in self.text_input.lines().enumerate() {
+        for (idx, line) in lines_vec.iter().enumerate() {
             let line_end = current_pos + line.len();
             log::debug!(
                 "CURSOR_DEBUG: loop idx={}, line={:?}, current_pos={}, line_end={}, text_cursor={}, condition={}",
@@ -1455,27 +1454,31 @@ impl Model {
                     "miss"
                 }
             );
+
+            let mut cursor_found = false;
             if self.text_cursor <= line_end {
                 cursor_line_idx = idx;
                 cursor_offset_in_line = self.text_cursor - current_pos;
-                cursor_found = true;
                 log::debug!(
                     "CURSOR_DEBUG: FOUND on line {}, offset_in_line={}",
                     cursor_line_idx,
                     cursor_offset_in_line
                 );
-                break;
+                cursor_found = true;
             }
             current_pos = line_end + 1; // +1 for newline
+            if cursor_found {
+                break;
+            }
         }
 
         // Handle case where cursor is at or past the end of the last line
         // This happens when there's a trailing newline (e.g., after pressing Shift+Enter)
-        // lines() doesn't return an empty string for trailing newlines, so we need to check
+        // split('\n') returns an empty string after trailing newlines, so we need to check
         // if the cursor is at the position where a new empty line would start
         if self.text_cursor >= current_pos {
             // Cursor is at/past the end of the last line, put it on a new empty line
-            cursor_line_idx = self.text_input.lines().count();
+            cursor_line_idx = lines_vec.len().saturating_sub(1);
             cursor_offset_in_line = 0;
             log::debug!(
                 "CURSOR_DEBUG: applied fix, cursor >= current_pos ({} >= {}), new_line_idx={}, offset=0",
@@ -1486,7 +1489,7 @@ impl Model {
         }
 
         // Y position: selected row + 1 (for prefix line) + cursor line index
-        let y = self.log_list_layout.y + relative_row as u16 + cursor_line_idx as u16;
+        let y = self.log_list_layout.y + relative_row as u16 + 1 + cursor_line_idx as u16;
 
         // X position: prefix + cursor offset in line
         // Prefix: "  → " = 4 characters
