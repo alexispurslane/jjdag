@@ -1393,9 +1393,15 @@ impl Model {
         let selected_idx = self.log_list_state.selected()?;
         let offset = self.log_list_state.offset();
 
-        // Calculate Y position within the list
-        let relative_row = selected_idx.saturating_sub(offset);
-        let y = self.log_list_layout.y + relative_row as u16;
+        // Calculate Y position within the list, accounting for multi-line items
+        // We need to count the total visual height of all items from offset to selected_idx
+        let mut visual_row = 0u16;
+        for idx in offset..selected_idx {
+            if let Some(item) = self.log_list.get(idx) {
+                visual_row += item.lines.len() as u16;
+            }
+        }
+        let y = self.log_list_layout.y + visual_row;
 
         // X position: need to account for the prefix before the bookmark text
         // This is approximate - we need to know the line's content up to the bookmark
@@ -1410,7 +1416,20 @@ impl Model {
         let first_line = line.lines.first()?;
         let first_line_text = first_line.to_string();
         let first_line_visible = strip_ansi(&first_line_text);
-        let x = self.log_list_layout.x + first_line_visible.len() as u16 + self.text_cursor as u16;
+
+        // @ (head) is narrow, needs +2 to align with wide ●/○
+        let tree_pos = self.get_selected_tree_position();
+        let head_offset = self
+            .jj_log
+            .get_tree_commit(&tree_pos)
+            .map(|c| if c.current_working_copy { 2 } else { 0 })
+            .unwrap_or(0);
+
+        let x = (self.log_list_layout.x
+            + first_line_visible.len() as u16
+            + head_offset
+            + self.text_cursor as u16)
+            .saturating_sub(2);
 
         Some((x, y))
     }
