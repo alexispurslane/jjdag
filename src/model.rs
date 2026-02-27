@@ -280,16 +280,36 @@ impl Model {
         }
     }
 
-    pub fn select_next_node(&mut self) {
-        if self.log_list_state.selected().unwrap() < self.log_list.len() - 1 {
+    pub fn select_next_node(&mut self) -> Result<()> {
+        let selected = self.log_list_state.selected().unwrap();
+        if selected < self.log_list.len() - 1 {
             self.log_list_state.select_next();
+        } else {
+            // At bottom of loaded list, try to load more
+            self.maybe_load_more()?;
         }
+        Ok(())
     }
 
     pub fn select_prev_node(&mut self) {
         if self.log_list_state.selected().unwrap() > 0 {
             self.log_list_state.select_previous();
         }
+    }
+
+    fn maybe_load_more(&mut self) -> Result<()> {
+        let selected = self.log_list_state.selected().unwrap();
+        // If we're at the last item and there might be more to load
+        if selected >= self.log_list.len() - 1 {
+            let had_more = self.jj_log.load_more()?;
+            if had_more {
+                // Re-sync to include newly loaded items
+                self.sync_log_list()?;
+                // Move to the newly loaded first item
+                self.log_list_state.select_next();
+            }
+        }
+        Ok(())
     }
 
     pub fn select_current_working_copy(&mut self) {
@@ -487,7 +507,7 @@ impl Model {
 
     pub fn scroll_down_once(&mut self) {
         if self.log_selected() <= self.log_offset() + self.log_list_scroll_padding {
-            self.select_next_node();
+            let _ = self.select_next_node();
         }
         *self.log_list_state.offset_mut() = self.log_offset() + 1;
     }

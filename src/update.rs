@@ -735,7 +735,7 @@ fn handle_msg(term: Term, model: &mut Model, msg: Message) -> Result<Option<Mess
         Message::ScrollDownPage => model.scroll_down_page(),
         Message::ScrollUpPage => model.scroll_up_page(),
         Message::SelectCurrentWorkingCopy => model.select_current_working_copy(),
-        Message::SelectNextNode => model.select_next_node(),
+        Message::SelectNextNode => model.select_next_node()?,
         Message::SelectNextSiblingNode => model.select_current_next_sibling_node()?,
         Message::SelectParentNode => model.select_parent_node()?,
         Message::SelectPrevNode => model.select_prev_node(),

@@ -8,22 +8,82 @@ use ratatui::{
 };
 use regex::Regex;
 use std::fmt;
+use std::sync::OnceLock;
+
+fn get_re_fields() -> &'static Regex {
+    static RE_FIELDS: OnceLock<Regex> = OnceLock::new();
+    RE_FIELDS.get_or_init(|| {
+        Regex::new(r"^([ │]*)(.)([ │]*)  ([k-z]{8,}(?:/\d+)?)\s+.*\s+([a-f0-9]{8,})\s*(\S*)\s*\n([ │├┤┬┴╭╮╯╰─┼]*)(\(empty\))?\s*(.*)").unwrap()
+    })
+}
+
+fn get_re_lines() -> &'static Regex {
+    static RE_LINES: OnceLock<Regex> = OnceLock::new();
+    RE_LINES.get_or_init(|| Regex::new(r"^[ │]*\S+[ │]*(.*)\n[ │├┤┬┴╭╮╯╰─┼]*(.*)").unwrap())
+}
+
+const INITIAL_LOAD_COUNT: usize = 200;
+const LOAD_BATCH_SIZE: usize = 200;
 
 #[derive(Debug)]
 pub struct JjLog {
     pub log_tree: Vec<CommitOrText>,
+    loaded_count: usize,
+    last_change_id: Option<String>,
+    revset: String,
+    global_args: GlobalArgs,
 }
 
 impl JjLog {
     pub fn new() -> Result<Self> {
         Ok(JjLog {
             log_tree: Vec::new(),
+            loaded_count: 0,
+            last_change_id: None,
+            revset: String::new(),
+            global_args: GlobalArgs {
+                repository: String::new(),
+                ignore_immutable: false,
+            },
         })
     }
 
     pub fn load_log_tree(&mut self, global_args: &GlobalArgs, revset: &str) -> Result<()> {
-        self.log_tree = CommitOrText::load_all(global_args, revset)?;
+        self.global_args = global_args.clone();
+        self.revset = revset.to_string();
+        self.log_tree = CommitOrText::load_all(global_args, revset, INITIAL_LOAD_COUNT)?;
+        self.loaded_count = self.log_tree.len();
+        self.last_change_id = Self::get_last_change_id(&self.log_tree);
         Ok(())
+    }
+
+    fn get_last_change_id(log_tree: &[CommitOrText]) -> Option<String> {
+        log_tree.iter().rev().find_map(|cot| {
+            if let CommitOrText::Commit(commit) = cot {
+                Some(commit.change_id.clone())
+            } else {
+                None
+            }
+        })
+    }
+
+    pub fn load_more(&mut self) -> Result<bool> {
+        let last_id = match &self.last_change_id {
+            Some(id) => id.clone(),
+            None => return Ok(false),
+        };
+
+        // Use revset to get commits older than last_change_id (ancestors of last_id's parents)
+        let revset = format!("..{}-", last_id);
+        let new_commits = CommitOrText::load_all(&self.global_args, &revset, LOAD_BATCH_SIZE)?;
+
+        let has_more = !new_commits.is_empty();
+        if has_more {
+            self.log_tree.extend(new_commits);
+            self.loaded_count = self.log_tree.len();
+            self.last_change_id = Self::get_last_change_id(&self.log_tree);
+        }
+        Ok(has_more)
     }
 
     pub fn flatten_log(&mut self) -> Result<(Vec<Text<'static>>, Vec<TreePosition>)> {
@@ -162,8 +222,8 @@ pub enum CommitOrText {
 }
 
 impl CommitOrText {
-    fn load_all(global_args: &GlobalArgs, revset: &str) -> Result<Vec<Self>> {
-        let output = JjCommand::log(revset, global_args.clone()).run()?;
+    fn load_all(global_args: &GlobalArgs, revset: &str, limit: usize) -> Result<Vec<Self>> {
+        let output = JjCommand::log(revset, limit, global_args.clone()).run()?;
         let mut lines = output.trim().lines();
         let re = Regex::new(r"^.+([k-z]{8}(?:/\d+)?)\s+.*\s+([a-f0-9]{8}).*$")?;
 
@@ -234,12 +294,8 @@ pub struct Commit {
 impl Commit {
     fn new(pretty_string: String) -> Result<Self> {
         let clean_string = strip_ansi(&pretty_string);
-        let re_fields = Regex::new(
-            r"^([ │]*)(.)([ │]*)  ([k-z]{8,}(?:/\d+)?)\s+.*\s+([a-f0-9]{8,})\s*(\S*)\s*\n([ │├┤┬┴╭╮╯╰─┼]*)(\(empty\))?\s*(.*)",
-        )?;
-        let re_lines = Regex::new(r"^[ │]*\S+[ │]*(.*)\n[ │├┤┬┴╭╮╯╰─┼]*(.*)")?;
 
-        let captures = re_fields
+        let captures = get_re_fields()
             .captures(&clean_string)
             .ok_or_else(|| anyhow!("Cannot parse commit fields: {:?}", clean_string))?;
         let line1_graph_chars: String = captures
@@ -301,7 +357,7 @@ impl Commit {
             Some(description_string)
         };
 
-        let captures = re_lines
+        let captures = get_re_lines()
             .captures(&pretty_string)
             .ok_or_else(|| anyhow!("Cannot parse commit lines: {:?}", pretty_string))?;
         let pretty_line1 = captures

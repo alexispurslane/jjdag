@@ -1,5 +1,5 @@
 use log::{Level, Log, Metadata, Record};
-use std::fs::{create_dir_all, OpenOptions};
+use std::fs::{OpenOptions, create_dir_all};
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -11,7 +11,7 @@ pub struct FileLogger {
 
 impl FileLogger {
     pub fn init(level: Level) -> Result<(), Box<dyn std::error::Error>> {
-        let log_dir = PathBuf::from("logs");
+        let log_dir = PathBuf::from("/tmp/jjdag");
         create_dir_all(&log_dir)?;
 
         let date = chrono::Local::now().format("%Y-%m-%d");

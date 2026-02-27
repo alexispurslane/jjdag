@@ -121,7 +121,11 @@ impl JjCommand {
                 stderr,
             })
         } else {
-            log::error!("Interactive command failed: {} - {}", self.args.join(" "), stderr);
+            log::error!(
+                "Interactive command failed: {} - {}",
+                self.args.join(" "),
+                stderr
+            );
             Err(JjCommandError::new_failed(stderr))
         }
     }
@@ -167,13 +171,15 @@ impl JjCommand {
         command
     }
 
-    pub fn log(revset: &str, global_args: GlobalArgs) -> Self {
+    pub fn log(revset: &str, limit: usize, global_args: GlobalArgs) -> Self {
         let args = [
             "log",
             "--template",
             "builtin_log_compact",
             "--revisions",
             revset,
+            "--limit",
+            &limit.to_string(),
         ];
         Self::_new(&args, global_args, None, ReturnOutput::Stdout)
     }
@@ -694,7 +700,11 @@ impl JjCommand {
             Ok(root)
         } else {
             let stderr = String::from_utf8_lossy(&output.stderr).into();
-            log::warn!("Repository validation failed for '{}': {}", repository, stderr);
+            log::warn!(
+                "Repository validation failed for '{}': {}",
+                repository,
+                stderr
+            );
             Err(JjCommandError::new_failed(stderr))
         }
     }
