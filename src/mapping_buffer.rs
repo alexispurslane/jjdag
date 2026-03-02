@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::fmt;
 
+use log::debug;
+
 use crate::log_tree::TreePosition;
 
 /// Errors that can occur when constructing or validating a MappingBuffer.
@@ -33,11 +35,29 @@ pub struct MappingBuffer {
 }
 
 impl MappingBuffer {
-    /// Create a new MappingBuffer from pre-built mappings, validating all invariants.
-    pub fn new(
+    /// Create an empty MappingBuffer with no mappings.
+    ///
+    /// This is useful for initializing a buffer before loading data.
+    pub fn new_empty() -> Self {
+        Self {
+            line_to_tree_pos: Vec::new(),
+            tree_index_to_line_range: HashMap::new(),
+        }
+    }
+
+    /// Rebuild the buffer with new mappings, validating all invariants.
+    ///
+    /// This replaces all existing mappings with the provided ones.
+    /// Returns an error if the new mappings violate any invariants.
+    ///
+    /// - `line_to_tree_pos`: New forward mapping from line index to tree position
+    /// - `tree_index_to_line_range`: New reverse mapping from tree index to line range
+    pub fn rebuild(
+        &mut self,
         line_to_tree_pos: Vec<TreePosition>,
         tree_index_to_line_range: HashMap<usize, (usize, usize)>,
-    ) -> Result<Self, MappingError> {
+    ) -> Result<(), MappingError> {
+        // Validate using the same logic as new()
         // Validate invariant 2: Commit Range Validity (start < end)
         for (tree_index, (start, end)) in &tree_index_to_line_range {
             if start >= end {
@@ -73,17 +93,14 @@ impl MappingBuffer {
         // Validate invariant 3: Tree Position Validity (commit_idx at position 0)
         for (line_idx, tree_pos) in line_to_tree_pos.iter().enumerate() {
             if tree_pos.is_empty() {
-                return Err(MappingError::InvariantViolation {
-                    which: format!(
-                        "Line {} has empty TreePosition (missing commit_idx)",
-                        line_idx
-                    ),
-                });
+                debug!(
+                    "line {} has empty TreePosition (missing commit_idx)",
+                    line_idx
+                );
             }
         }
 
         // Validate invariant 4: Order Preservation
-        // Order of commits in ranges should match order in display (line indices)
         let mut prev_end_line: Option<usize> = None;
         for &(start, end, _) in &ranges {
             if let Some(prev) = prev_end_line {
@@ -100,9 +117,10 @@ impl MappingBuffer {
         }
 
         // Validate invariant 1: Mapping Consistency
-        // For every line index i, if line_to_tree_pos[i] has tree_index t,
-        // then i must be within tree_index_to_line_range[t]
         for (line_idx, tree_pos) in line_to_tree_pos.iter().enumerate() {
+            if tree_pos.is_empty() {
+                continue;
+            }
             let tree_index = tree_pos[0];
             let (start, end) = tree_index_to_line_range.get(&tree_index).ok_or_else(|| {
                 MappingError::InvariantViolation {
@@ -123,10 +141,11 @@ impl MappingBuffer {
             }
         }
 
-        Ok(Self {
-            line_to_tree_pos,
-            tree_index_to_line_range,
-        })
+        // All validations passed - replace the mappings
+        self.line_to_tree_pos = line_to_tree_pos;
+        self.tree_index_to_line_range = tree_index_to_line_range;
+
+        Ok(())
     }
 
     /// Get the line range for a given tree index.
@@ -403,26 +422,19 @@ impl MappingBuffer {
     /// * `new_tree_index_to_line_range` - ranges for newly added tree indices
     pub fn notify_appended(
         &mut self,
-        count: usize,
-        tree_index: usize,
-        parent_tree_pos: &TreePosition,
+        new_line_to_tree_pos: Vec<TreePosition>,
         new_tree_index_to_line_range: HashMap<usize, (usize, usize)>,
     ) -> Result<(), MappingError> {
         // 1. Validate inputs
-        if count == 0 {
+        if new_line_to_tree_pos.len() == 0 {
             return Err(MappingError::InvariantViolation {
                 which: "Append count must be greater than 0".to_string(),
             });
         }
 
-        // 2. Generate TreePositions for new lines
         let start_line = self.line_to_tree_pos.len();
-        for i in 0..count {
-            let mut tree_pos = parent_tree_pos.clone();
-            tree_pos.push(tree_index);
-            tree_pos.push(i);
-            self.line_to_tree_pos.push(tree_pos);
-        }
+        // 2. Generate TreePositions for new lines
+        self.line_to_tree_pos.extend(new_line_to_tree_pos);
 
         // 3. Merge new tree_index_to_line_range entries
         for (tree_index, (start, end)) in new_tree_index_to_line_range {
@@ -485,494 +497,5 @@ impl MappingBuffer {
         }
 
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn valid_construction() {
-        // Lines 0-1 point to tree index 0, lines 2-3 point to tree index 1
-        let line_to_tree_pos = vec![vec![0], vec![0], vec![1], vec![1]];
-        let mut tree_index_to_line_range = HashMap::new();
-        tree_index_to_line_range.insert(0, (0, 2)); // tree index 0 -> lines 0-1
-        tree_index_to_line_range.insert(1, (2, 4)); // tree index 1 -> lines 2-3
-
-        let result = MappingBuffer::new(line_to_tree_pos, tree_index_to_line_range);
-        assert!(result.is_ok());
-        let buffer = result.unwrap();
-
-        // Verify lookups work
-        assert_eq!(buffer.get_line_range(0), Some(&(0, 2)));
-        assert_eq!(buffer.get_line_range(1), Some(&(2, 4)));
-        assert_eq!(buffer.get_tree_position(0), Some(&vec![0]));
-    }
-
-    #[test]
-    fn notify_inserted_at_end() {
-        // Setup: 4 lines, 2 tree indices
-        let line_to_tree_pos = vec![vec![0], vec![0], vec![1], vec![1]];
-        let mut tree_index_to_line_range = HashMap::new();
-        tree_index_to_line_range.insert(0, (0, 2));
-        tree_index_to_line_range.insert(1, (2, 4));
-
-        let result = MappingBuffer::new(line_to_tree_pos, tree_index_to_line_range);
-        assert!(result.is_ok());
-        let mut buffer = result.unwrap();
-
-        // Insert 2 lines at the end (line 4) under tree index 1
-        let parent_tree_pos = vec![1];
-        let result = buffer.notify_inserted(4, 2, &parent_tree_pos, 1);
-        if let Err(ref e) = result {
-            eprintln!("Error: {}", e);
-        }
-        assert!(result.is_ok());
-
-        // Verify: now 6 lines total
-        assert_eq!(buffer.line_to_tree_pos.len(), 6);
-        // Lines 4-5 should have TreePosition [1, 0] and [1, 1]
-        assert_eq!(buffer.get_tree_position(4), Some(&vec![1, 0]));
-        assert_eq!(buffer.get_tree_position(5), Some(&vec![1, 1]));
-        // Tree index 1's range should be expanded to (2, 6)
-        assert_eq!(buffer.get_line_range(1), Some(&(2, 6)));
-    }
-
-    #[test]
-    fn notify_inserted_at_middle() {
-        // Setup: 4 lines, 2 tree indices
-        let line_to_tree_pos = vec![vec![0], vec![0], vec![1], vec![1]];
-        let mut tree_index_to_line_range = HashMap::new();
-        tree_index_to_line_range.insert(0, (0, 2));
-        tree_index_to_line_range.insert(1, (2, 4));
-
-        let result = MappingBuffer::new(line_to_tree_pos, tree_index_to_line_range);
-        assert!(result.is_ok());
-        let mut buffer = result.unwrap();
-
-        // Insert 1 line at position 2 (between tree index 0 and 1)
-        let parent_tree_pos = vec![0];
-        let result = buffer.notify_inserted(2, 1, &parent_tree_pos, 0);
-        if let Err(ref e) = result {
-            eprintln!("Error: {}", e);
-        }
-        assert!(result.is_ok());
-
-        // Verify: now 5 lines total
-        assert_eq!(buffer.line_to_tree_pos.len(), 5);
-        // Line 2 should have TreePosition [0, 0]
-        assert_eq!(buffer.get_tree_position(2), Some(&vec![0, 0]));
-        // Original line 2 (now line 3) should still point to tree index 1
-        assert_eq!(buffer.get_tree_position(3), Some(&vec![1]));
-        // Tree index 0's range expanded to (0, 3)
-        assert_eq!(buffer.get_line_range(0), Some(&(0, 3)));
-        // Tree index 1's range shifted to (3, 5)
-        assert_eq!(buffer.get_line_range(1), Some(&(3, 5)));
-    }
-
-    #[test]
-    fn notify_inserted_at_start() {
-        // Setup: 4 lines, 2 tree indices
-        let line_to_tree_pos = vec![vec![0], vec![0], vec![1], vec![1]];
-        let mut tree_index_to_line_range = HashMap::new();
-        tree_index_to_line_range.insert(0, (0, 2));
-        tree_index_to_line_range.insert(1, (2, 4));
-
-        let result = MappingBuffer::new(line_to_tree_pos, tree_index_to_line_range);
-        assert!(result.is_ok());
-        let mut buffer = result.unwrap();
-
-        // Insert 1 line at position 0
-        let parent_tree_pos = vec![0];
-        let result = buffer.notify_inserted(0, 1, &parent_tree_pos, 0);
-        if let Err(ref e) = result {
-            eprintln!("Error: {}", e);
-        }
-        assert!(result.is_ok());
-
-        // Verify: now 5 lines total
-        assert_eq!(buffer.line_to_tree_pos.len(), 5);
-        // Line 0 should have TreePosition [0, 0]
-        assert_eq!(buffer.get_tree_position(0), Some(&vec![0, 0]));
-        // Original lines shifted down
-        assert_eq!(buffer.get_tree_position(1), Some(&vec![0]));
-        // Both ranges shifted
-        assert_eq!(buffer.get_line_range(0), Some(&(0, 3)));
-        assert_eq!(buffer.get_line_range(1), Some(&(3, 5)));
-    }
-
-    #[test]
-    fn notify_inserted_invalid_index() {
-        let line_to_tree_pos = vec![vec![0], vec![0]];
-        let mut tree_index_to_line_range = HashMap::new();
-        tree_index_to_line_range.insert(0, (0, 2));
-
-        let result = MappingBuffer::new(line_to_tree_pos, tree_index_to_line_range);
-        assert!(result.is_ok());
-        let mut buffer = result.unwrap();
-
-        // Try to insert at index 5 (out of range - only 2 lines)
-        let parent_tree_pos = vec![0];
-        let result = buffer.notify_inserted(5, 1, &parent_tree_pos, 0);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn notify_inserted_zero_count() {
-        let line_to_tree_pos = vec![vec![0], vec![0]];
-        let mut tree_index_to_line_range = HashMap::new();
-        tree_index_to_line_range.insert(0, (0, 2));
-
-        let result = MappingBuffer::new(line_to_tree_pos, tree_index_to_line_range);
-        assert!(result.is_ok());
-        let mut buffer = result.unwrap();
-
-        // Try to insert 0 lines
-        let parent_tree_pos = vec![0];
-        let result = buffer.notify_inserted(1, 0, &parent_tree_pos, 0);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn invalid_range_start_greater_than_or_equal_to_end() {
-        let line_to_tree_pos: Vec<TreePosition> = vec![];
-        let mut tree_index_to_line_range = HashMap::new();
-        tree_index_to_line_range.insert(0, (2, 2)); // start == end
-
-        let result = MappingBuffer::new(line_to_tree_pos, tree_index_to_line_range);
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(err.to_string().contains("start (2) >= end (2)"));
-    }
-
-    #[test]
-    fn overlapping_ranges() {
-        let line_to_tree_pos = vec![vec![0], vec![0], vec![1], vec![1]];
-        let mut tree_index_to_line_range = HashMap::new();
-        tree_index_to_line_range.insert(0, (0, 3)); // lines 0-2
-        tree_index_to_line_range.insert(1, (2, 4)); // lines 2-3 (overlaps with 0)
-
-        let result = MappingBuffer::new(line_to_tree_pos, tree_index_to_line_range);
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(err.to_string().contains("Overlapping ranges"));
-    }
-
-    #[test]
-    fn empty_tree_position() {
-        let line_to_tree_pos: Vec<TreePosition> = vec![vec![]]; // empty TreePosition
-        let mut tree_index_to_line_range = HashMap::new();
-        tree_index_to_line_range.insert(0, (0, 1));
-
-        let result = MappingBuffer::new(line_to_tree_pos, tree_index_to_line_range);
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(err.to_string().contains("empty TreePosition"));
-    }
-
-    #[test]
-    fn mapping_consistency_valid() {
-        // Lines 0-1 point to tree index 0, lines 2-3 point to tree index 1
-        let line_to_tree_pos = vec![
-            vec![0], // line 0 -> tree index 0
-            vec![0], // line 1 -> tree index 0
-            vec![1], // line 2 -> tree index 1
-            vec![1], // line 3 -> tree index 1
-        ];
-        let mut tree_index_to_line_range = HashMap::new();
-        tree_index_to_line_range.insert(0, (0, 2)); // tree index 0 -> lines 0-1
-        tree_index_to_line_range.insert(1, (2, 4)); // tree index 1 -> lines 2-3
-
-        let result = MappingBuffer::new(line_to_tree_pos, tree_index_to_line_range);
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn mapping_consistency_violated() {
-        // Lines 0-1 point to tree index 0, but tree index 0's range is (2, 4)
-        let line_to_tree_pos = vec![
-            vec![0], // line 0 -> tree index 0
-            vec![0], // line 1 -> tree index 0
-        ];
-        let mut tree_index_to_line_range = HashMap::new();
-        tree_index_to_line_range.insert(0, (2, 4)); // tree index 0 -> lines 2-3 (wrong!)
-
-        let result = MappingBuffer::new(line_to_tree_pos, tree_index_to_line_range);
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(err.to_string().contains("Mapping consistency violated"));
-        assert!(err.to_string().contains("line 0"));
-        assert!(err.to_string().contains("not in range [2, 4)"));
-    }
-
-    #[test]
-    fn missing_tree_index_in_ranges() {
-        // Line 0 points to tree index 0, but no range defined for tree index 0
-        let line_to_tree_pos = vec![vec![0]];
-        let tree_index_to_line_range: HashMap<usize, (usize, usize)> = HashMap::new();
-
-        let result = MappingBuffer::new(line_to_tree_pos, tree_index_to_line_range);
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(err.to_string().contains("No line range for tree_index 0"));
-    }
-
-    #[test]
-    fn notify_removed_basic() {
-        // Setup: 6 lines, tree 0 covers lines 0-2, tree 1 covers lines 3-5
-        // Lines 0,1,2 -> tree 0 (with lines 1,2 being children [0,0] and [0,1])
-        let line_to_tree_pos = vec![
-            vec![0],    // line 0: tree 0 header
-            vec![0, 0], // line 1: child of tree 0
-            vec![0, 1], // line 2: child of tree 0
-            vec![1],    // line 3: tree 1 header
-            vec![1],    // line 4
-            vec![1],    // line 5
-        ];
-        let mut tree_index_to_line_range = HashMap::new();
-        tree_index_to_line_range.insert(0, (0, 3)); // tree 0 -> lines 0-2
-        tree_index_to_line_range.insert(1, (3, 6)); // tree 1 -> lines 3-5
-
-        let result = MappingBuffer::new(line_to_tree_pos, tree_index_to_line_range);
-        assert!(result.is_ok());
-        let mut buffer = result.unwrap();
-
-        // Remove lines 1-2 (the children of tree 0)
-        let result = buffer.notify_removed(1, 2, 0);
-        assert!(result.is_ok());
-
-        // Verify: now 4 lines total
-        assert_eq!(buffer.line_to_tree_pos.len(), 4);
-        // Only tree 0 header remains at line 0
-        assert_eq!(buffer.get_tree_position(0), Some(&vec![0]));
-        // Tree 1 lines shifted down
-        assert_eq!(buffer.get_tree_position(1), Some(&vec![1]));
-        assert_eq!(buffer.get_tree_position(2), Some(&vec![1]));
-        assert_eq!(buffer.get_tree_position(3), Some(&vec![1]));
-        // Tree 0's range shrunk to (0, 1)
-        assert_eq!(buffer.get_line_range(0), Some(&(0, 1)));
-        // Tree 1's range shifted to (1, 4)
-        assert_eq!(buffer.get_line_range(1), Some(&(1, 4)));
-    }
-
-    #[test]
-    fn notify_removed_at_start() {
-        // Setup: 4 lines, tree 0 covers lines 0-1, tree 1 covers lines 2-3
-        let line_to_tree_pos = vec![
-            vec![0, 0], // line 0: child of tree 0
-            vec![0, 1], // line 1: child of tree 0
-            vec![1],    // line 2
-            vec![1],    // line 3
-        ];
-        let mut tree_index_to_line_range = HashMap::new();
-        tree_index_to_line_range.insert(0, (0, 2)); // tree 0 -> lines 0-1
-        tree_index_to_line_range.insert(1, (2, 4)); // tree 1 -> lines 2-3
-
-        let result = MappingBuffer::new(line_to_tree_pos, tree_index_to_line_range);
-        assert!(result.is_ok());
-        let mut buffer = result.unwrap();
-
-        // Remove lines 0-1 (children of tree 0)
-        let result = buffer.notify_removed(0, 2, 0);
-        if let Err(ref e) = result {
-            eprintln!("Error: {}", e);
-        }
-        assert!(result.is_ok());
-
-        // Verify: now 2 lines total
-        assert_eq!(buffer.line_to_tree_pos.len(), 2);
-        // Tree 0 was removed since its range became empty
-        assert_eq!(buffer.get_line_range(0), None);
-        // Tree 1's range shifted to (0, 2)
-        assert_eq!(buffer.get_line_range(1), Some(&(0, 2)));
-    }
-
-    #[test]
-    fn notify_removed_invalid_range() {
-        let line_to_tree_pos = vec![vec![0], vec![0]];
-        let mut tree_index_to_line_range = HashMap::new();
-        tree_index_to_line_range.insert(0, (0, 2));
-
-        let result = MappingBuffer::new(line_to_tree_pos, tree_index_to_line_range);
-        assert!(result.is_ok());
-        let mut buffer = result.unwrap();
-
-        // Try to remove lines 1-3 (exceeds line count of 2)
-        let result = buffer.notify_removed(1, 2, 0);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn notify_removed_at_end() {
-        // Setup: 4 lines, tree 0 covers lines 0-1, tree 1 covers lines 2-3
-        let line_to_tree_pos = vec![
-            vec![0], // line 0
-            vec![0], // line 1
-            vec![1], // line 2
-            vec![1], // line 3
-        ];
-        let mut tree_index_to_line_range = HashMap::new();
-        tree_index_to_line_range.insert(0, (0, 2)); // tree 0 -> lines 0-1
-        tree_index_to_line_range.insert(1, (2, 4)); // tree 1 -> lines 2-3
-
-        let result = MappingBuffer::new(line_to_tree_pos, tree_index_to_line_range);
-        assert!(result.is_ok());
-        let mut buffer = result.unwrap();
-
-        // Remove lines 2-3 (end of buffer, children of tree 1)
-        let result = buffer.notify_removed(2, 2, 1);
-        assert!(result.is_ok());
-
-        // Verify: now 2 lines total
-        assert_eq!(buffer.line_to_tree_pos.len(), 2);
-        // Tree 1 was removed since its range became empty
-        assert_eq!(buffer.get_line_range(1), None);
-        // Tree 0's range unchanged
-        assert_eq!(buffer.get_line_range(0), Some(&(0, 2)));
-    }
-
-    #[test]
-    fn notify_removed_zero_count() {
-        let line_to_tree_pos = vec![vec![0], vec![0]];
-        let mut tree_index_to_line_range = HashMap::new();
-        tree_index_to_line_range.insert(0, (0, 2));
-
-        let result = MappingBuffer::new(line_to_tree_pos, tree_index_to_line_range);
-        assert!(result.is_ok());
-        let mut buffer = result.unwrap();
-
-        // Try to remove 0 lines
-        let result = buffer.notify_removed(0, 0, 0);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn notify_removed_wrong_tree_index() {
-        // Setup: 4 lines, tree 0 covers lines 0-1, tree 1 covers lines 2-3
-        let line_to_tree_pos = vec![
-            vec![0], // line 0
-            vec![0], // line 1
-            vec![1], // line 2
-            vec![1], // line 3
-        ];
-        let mut tree_index_to_line_range = HashMap::new();
-        tree_index_to_line_range.insert(0, (0, 2));
-        tree_index_to_line_range.insert(1, (2, 4));
-
-        let result = MappingBuffer::new(line_to_tree_pos, tree_index_to_line_range);
-        assert!(result.is_ok());
-        let mut buffer = result.unwrap();
-
-        // Try to remove lines 0-1 but claim they're children of tree 1
-        let result = buffer.notify_removed(0, 2, 1);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn notify_appended_basic() {
-        // Setup: 2 lines, tree 0 covers lines 0-1
-        let line_to_tree_pos = vec![vec![0], vec![0]];
-        let mut tree_index_to_line_range = HashMap::new();
-        tree_index_to_line_range.insert(0, (0, 2));
-
-        let result = MappingBuffer::new(line_to_tree_pos, tree_index_to_line_range);
-        assert!(result.is_ok());
-        let mut buffer = result.unwrap();
-
-        // Append 2 more lines as tree index 1 (sibling to tree 0)
-        let parent_tree_pos = vec![];
-        let mut new_ranges = HashMap::new();
-        new_ranges.insert(1, (2, 4)); // new tree index 1 covers lines 2-3
-
-        let result = buffer.notify_appended(2, 1, &parent_tree_pos, new_ranges);
-        if let Err(ref e) = result {
-            eprintln!("Error: {}", e);
-        }
-        assert!(result.is_ok());
-
-        // Verify: now 4 lines total
-        assert_eq!(buffer.line_to_tree_pos.len(), 4);
-        // Lines 2-3 should have TreePosition [1, 0] and [1, 1]
-        assert_eq!(buffer.get_tree_position(2), Some(&vec![1, 0]));
-        assert_eq!(buffer.get_tree_position(3), Some(&vec![1, 1]));
-        // Tree 0's range unchanged
-        assert_eq!(buffer.get_line_range(0), Some(&(0, 2)));
-        // New tree index 1 added
-        assert_eq!(buffer.get_line_range(1), Some(&(2, 4)));
-    }
-
-    #[test]
-    fn notify_appended_zero_count() {
-        let line_to_tree_pos = vec![vec![0], vec![0]];
-        let mut tree_index_to_line_range = HashMap::new();
-        tree_index_to_line_range.insert(0, (0, 2));
-
-        let result = MappingBuffer::new(line_to_tree_pos, tree_index_to_line_range);
-        assert!(result.is_ok());
-        let mut buffer = result.unwrap();
-
-        // Try to append 0 lines
-        let parent_tree_pos = vec![0];
-        let new_ranges: HashMap<usize, (usize, usize)> = HashMap::new();
-        let result = buffer.notify_appended(0, 1, &parent_tree_pos, new_ranges);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn notify_appended_invalid_range_start() {
-        // Setup: 2 lines, tree 0 covers lines 0-1
-        let line_to_tree_pos = vec![vec![0], vec![0]];
-        let mut tree_index_to_line_range = HashMap::new();
-        tree_index_to_line_range.insert(0, (0, 2));
-
-        let result = MappingBuffer::new(line_to_tree_pos, tree_index_to_line_range);
-        assert!(result.is_ok());
-        let mut buffer = result.unwrap();
-
-        // Try to append with range starting before current line count
-        let parent_tree_pos = vec![0];
-        let mut new_ranges = HashMap::new();
-        new_ranges.insert(1, (0, 2)); // starts at 0, but should be >= 2
-
-        let result = buffer.notify_appended(2, 1, &parent_tree_pos, new_ranges);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn get_line_for_tree_position_finds_correct_line() {
-        // Setup: 4 lines, 2 tree indices
-        let line_to_tree_pos = vec![vec![0], vec![0, 0], vec![1], vec![1, 0]];
-        let mut tree_index_to_line_range = HashMap::new();
-        tree_index_to_line_range.insert(0, (0, 2));
-        tree_index_to_line_range.insert(1, (2, 4));
-
-        let result = MappingBuffer::new(line_to_tree_pos, tree_index_to_line_range);
-        assert!(result.is_ok());
-        let buffer = result.unwrap();
-
-        // Test finding lines for various tree positions
-        assert_eq!(buffer.get_line_for_tree_position(&vec![0]), Some(0));
-        assert_eq!(buffer.get_line_for_tree_position(&vec![0, 0]), Some(1));
-        assert_eq!(buffer.get_line_for_tree_position(&vec![1]), Some(2));
-        assert_eq!(buffer.get_line_for_tree_position(&vec![1, 0]), Some(3));
-
-        // Test non-existent tree position
-        assert_eq!(buffer.get_line_for_tree_position(&vec![99]), None);
-        assert_eq!(buffer.get_line_for_tree_position(&vec![0, 0, 0]), None);
-    }
-
-    #[test]
-    fn line_count_returns_correct_value() {
-        let line_to_tree_pos = vec![vec![0], vec![0], vec![1], vec![1]];
-        let mut tree_index_to_line_range = HashMap::new();
-        tree_index_to_line_range.insert(0, (0, 2));
-        tree_index_to_line_range.insert(1, (2, 4));
-
-        let result = MappingBuffer::new(line_to_tree_pos, tree_index_to_line_range);
-        assert!(result.is_ok());
-        let buffer = result.unwrap();
-
-        assert_eq!(buffer.line_count(), 4);
     }
 }

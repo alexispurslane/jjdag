@@ -1,7 +1,9 @@
 mod cli;
 mod command_tree;
+mod commit_data;
 mod log_tree;
 mod logger;
+mod mapping_buffer;
 mod model;
 mod shell_out;
 mod terminal;
@@ -75,7 +77,7 @@ fn run() -> Result<()> {
     let model = Model::new(repository, args.revisions)?;
     log::info!(
         "Model initialized with {} revisions",
-        model.jj_log.log_tree.len()
+        model.jj_log.commits.len()
     );
 
     let terminal = terminal::init_terminal()?;

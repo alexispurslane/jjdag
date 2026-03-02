@@ -1,24 +1,24 @@
+use crate::update::{
+    AbandonMode, AbsorbMode, BookmarkMoveMode, DuplicateDestination, DuplicateDestinationType,
+    EditMode, GitFetchMode, GitPushMode, InterdiffMode, Message, MetaeditAction, NewMode,
+    NextPrevDirection, NextPrevMode, ParallelizeSource, RebaseDestination, RebaseDestinationType,
+    RebaseSourceType, RestoreMode, RevertDestination, RevertDestinationType, RevertRevision,
+    SignAction, SimplifyParentsMode, SquashMode, TextPromptAction, ViewMode,
+};
 use crate::{
     command_tree::{CommandTree, display_unbound_error_lines},
-    log_tree::{
-        DIFF_HUNK_LINE_IDX, JjLog, LogTreeNode, TreePosition, get_parent_tree_position, strip_ansi,
-    },
+    commit_data::CommitData,
+    log_tree::{JjLog, TreePosition, strip_ansi},
+    mapping_buffer::MappingBuffer,
     shell_out::{JjCommand, JjCommandError},
     terminal::Term,
-    update::{
-        AbandonMode, AbsorbMode, BookmarkMoveMode, DuplicateDestination, DuplicateDestinationType,
-        EditMode, GitFetchMode, GitPushMode, InterdiffMode, Message, MetaeditAction, NewMode,
-        NextPrevDirection, NextPrevMode, ParallelizeSource, RebaseDestination,
-        RebaseDestinationType, RebaseSourceType, RestoreMode, RevertDestination,
-        RevertDestinationType, RevertRevision, SignAction, SimplifyParentsMode, SquashMode,
-        TextPromptAction, ViewMode,
-    },
 };
 use ansi_to_tui::IntoText;
 use anyhow::Result;
 use arboard::Clipboard;
 use crossterm::event::KeyCode;
 use std::fmt;
+use std::sync::{Arc, Mutex};
 
 /// Wrapper for Clipboard that implements Debug
 pub struct ClipboardWrapper(Option<Clipboard>);
@@ -58,7 +58,6 @@ use ratatui::{
     layout::Rect,
     style::{Color, Style},
     text::{Line, Span, Text},
-    widgets::ListState,
 };
 
 const LOG_LIST_SCROLL_PADDING: usize = 0;
@@ -90,9 +89,14 @@ pub struct Model {
     saved_file_path: Option<String>,
     saved_tree_position: Option<TreePosition>,
     pub jj_log: JjLog,
-    pub log_list: Vec<Text<'static>>,
-    pub log_list_state: ListState,
-    log_list_tree_positions: Vec<TreePosition>,
+    /// MappingBuffer for correlating display lines to tree positions
+    pub mapping_buffer: Arc<Mutex<MappingBuffer>>,
+    /// Display lines as Text with parsed ANSI styles
+    pub display_lines: Vec<Text<'static>>,
+    /// Current cursor position (selected line index into display_lines)
+    pub cursor: usize,
+    /// Scroll offset (first visible line)
+    pub scroll_offset: usize,
     pub log_list_layout: Rect,
     pub log_list_scroll_padding: usize,
     pub info_list: Option<Text<'static>>,
@@ -125,6 +129,10 @@ enum ScrollDirection {
 
 impl Model {
     pub fn new(repository: String, revset: String) -> Result<Self> {
+        // Create empty MappingBuffer and pass to JjLog
+        let mapping_buffer = Arc::new(Mutex::new(MappingBuffer::new_empty()));
+        let (jj_log, _) = JjLog::new(mapping_buffer.clone())?;
+
         let mut model = Self {
             state: State::default(),
             command_tree: CommandTree::new(),
@@ -134,10 +142,11 @@ impl Model {
             saved_tree_position: None,
             saved_change_id: None,
             saved_file_path: None,
-            jj_log: JjLog::new()?,
-            log_list: Vec::new(),
-            log_list_state: ListState::default(),
-            log_list_tree_positions: Vec::new(),
+            jj_log,
+            mapping_buffer,
+            display_lines: Vec::new(),
+            cursor: 0,
+            scroll_offset: 0,
             log_list_layout: Rect::ZERO,
             log_list_scroll_padding: LOG_LIST_SCROLL_PADDING,
             info_list: None,
@@ -168,24 +177,25 @@ impl Model {
     }
 
     fn reset_log_list_selection(&mut self) -> Result<()> {
-        // Start with @ selected and unfolded
-        let list_idx = match self.jj_log.get_current_commit() {
-            None => 0,
-            Some(commit) => commit.flat_log_idx,
-        };
-        self.log_select(list_idx);
-        self.toggle_current_fold()
+        self.cursor = 0;
+        self.scroll_offset = 0;
+        Ok(())
     }
 
     pub fn sync(&mut self) -> Result<()> {
-        self.jj_log.load_log_tree(&self.global_args, &self.revset)?;
-        self.sync_log_list()?;
-        self.reset_log_list_selection()?;
+        let raw_lines = self.jj_log.load_log_tree(&self.global_args, &self.revset)?;
+        self.display_lines = raw_lines
+            .into_iter()
+            .map(|line| line.into_text())
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(())
     }
 
     fn sync_log_list(&mut self) -> Result<()> {
-        (self.log_list, self.log_list_tree_positions) = self.jj_log.flatten_log()?;
+        // Ensure cursor is within bounds after sync
+        if self.cursor >= self.display_lines.len() && !self.display_lines.is_empty() {
+            self.cursor = self.display_lines.len() - 1;
+        }
         Ok(())
     }
 
@@ -197,8 +207,35 @@ impl Model {
             .map(|t| t.to_string())
             .filter(|s| s.starts_with("Refreshed"))
             .map_or(0, |s| s.matches('.').count() + 3);
+
+        // Save current tree position for restoration
+        let saved_tree_pos = {
+            let buffer = self.mapping_buffer.lock().ok();
+            buffer.and_then(|b| b.get_tree_position(self.cursor).cloned())
+        };
+
         self.clear();
         self.sync()?;
+
+        // Restore selection: look up new line for saved tree position
+        if let Some(tree_pos) = saved_tree_pos {
+            if let Ok(buffer) = self.mapping_buffer.lock() {
+                // Try to find exact position first
+                let mut current_pos = tree_pos.clone();
+
+                // Walk up parents until we find a valid position
+                while !current_pos.is_empty() {
+                    if let Some(line_idx) = buffer.get_line_for_tree_position(&current_pos) {
+                        self.cursor = line_idx;
+                        self.scroll_offset = line_idx; // Keep cursor visible
+                        break;
+                    }
+                    // Try parent position
+                    current_pos.pop();
+                }
+            }
+        }
+
         self.info_list = Some(format!("Refreshed{}", ".".repeat(periods)).into());
         Ok(())
     }
@@ -208,19 +245,25 @@ impl Model {
     }
 
     fn log_offset(&self) -> usize {
-        self.log_list_state.offset()
+        self.scroll_offset
     }
 
     fn log_selected(&self) -> usize {
-        self.log_list_state.selected().unwrap()
+        self.cursor
     }
 
     fn log_select(&mut self, idx: usize) {
-        self.log_list_state.select(Some(idx));
+        self.cursor = idx;
     }
 
     fn get_selected_tree_position(&self) -> TreePosition {
-        self.log_list_tree_positions[self.log_selected()].clone()
+        // Get tree position from mapping_buffer using current cursor
+        if let Ok(buffer) = self.mapping_buffer.lock() {
+            if let Some(pos) = buffer.get_tree_position(self.cursor) {
+                return pos.clone();
+            }
+        }
+        Vec::new()
     }
 
     fn get_selected_change_id(&self) -> Option<&str> {
@@ -233,10 +276,12 @@ impl Model {
     }
 
     fn get_change_id(&self, tree_pos: TreePosition) -> Option<&str> {
-        match self.jj_log.get_tree_commit(&tree_pos) {
-            None => None,
-            Some(commit) => Some(&commit.change_id),
-        }
+        // tree_pos[0] is the commit index in jj_log.commits
+        let commit_idx = tree_pos.first()?;
+        self.jj_log
+            .commits
+            .get(*commit_idx)
+            .map(|c| c.change_id.as_str())
     }
 
     fn get_selected_file_path(&self) -> Option<&str> {
@@ -249,41 +294,54 @@ impl Model {
     }
 
     fn get_file_path(&self, tree_pos: TreePosition) -> Option<&str> {
-        match self.jj_log.get_tree_file_diff(&tree_pos) {
-            None => None,
-            Some(file_diff) => Some(&file_diff.path),
-        }
+        // Tree position format: [commit_idx, file_idx]
+        let commit_idx = tree_pos.first()?;
+        let commit = self.jj_log.commits.get(*commit_idx)?;
+        let file_idx = tree_pos.get(1)?;
+        let file_diffs = commit.file_diffs.as_ref()?;
+        let file_diff = file_diffs.get(*file_idx)?;
+        Some(&file_diff.path)
     }
 
+    /// Get the line indices for saved selection (commit and file diff).
+    /// Returns (commit_line_idx, file_diff_line_idx) if saved selection exists.
     pub fn get_saved_selection_flat_log_idxs(&self) -> (Option<usize>, Option<usize>) {
-        let Some(saved_tree_position) = self.saved_tree_position.as_ref() else {
+        let Some(ref tree_pos) = self.saved_tree_position else {
             return (None, None);
         };
 
-        let commit_idx = self
-            .jj_log
-            .get_tree_commit(saved_tree_position)
-            .map(|commit| commit.flat_log_idx);
-        let file_diff_idx = self
-            .jj_log
-            .get_tree_file_diff(saved_tree_position)
-            .map(|file_diff| file_diff.flat_log_idx());
+        // Get line index for saved commit
+        let commit_idx = {
+            let Ok(buffer) = self.mapping_buffer.lock() else {
+                return (None, None);
+            };
+            buffer.get_line_for_tree_position(tree_pos)
+        };
 
-        (commit_idx, file_diff_idx)
+        // If tree_pos has file component, get that too
+        let file_idx = if tree_pos.len() > 1 {
+            let Ok(buffer) = self.mapping_buffer.lock() else {
+                return (commit_idx, None);
+            };
+            buffer.get_line_for_tree_position(tree_pos)
+        } else {
+            None
+        };
+
+        (commit_idx, file_idx)
     }
 
     fn is_selected_working_copy(&self) -> bool {
         let tree_pos = self.get_selected_tree_position();
-        match self.jj_log.get_tree_commit(&tree_pos) {
-            None => false,
-            Some(commit) => commit.current_working_copy,
+        if let Some(commit) = self.jj_log.commits.get(tree_pos[0]) {
+            return commit.is_working_copy;
         }
+        false
     }
 
     pub fn select_next_node(&mut self) -> Result<()> {
-        let selected = self.log_list_state.selected().unwrap();
-        if selected < self.log_list.len() - 1 {
-            self.log_list_state.select_next();
+        if self.cursor < self.display_lines.len().saturating_sub(1) {
+            self.cursor += 1;
         } else {
             // At bottom of loaded list, try to load more
             self.maybe_load_more()?;
@@ -292,39 +350,75 @@ impl Model {
     }
 
     pub fn select_prev_node(&mut self) {
-        if self.log_list_state.selected().unwrap() > 0 {
-            self.log_list_state.select_previous();
+        if self.cursor > 0 {
+            self.cursor -= 1;
         }
     }
 
     fn maybe_load_more(&mut self) -> Result<()> {
-        let selected = self.log_list_state.selected().unwrap();
-        // If we're at the last item and there might be more to load
-        if selected >= self.log_list.len() - 1 {
-            let had_more = self.jj_log.load_more()?;
-            if had_more {
-                // Re-sync to include newly loaded items
-                self.sync_log_list()?;
-                // Move to the newly loaded first item
-                self.log_list_state.select_next();
-            }
-        }
+        let line_offset = self.display_lines.len();
+        let (new_raw_lines, _had_more) = self.jj_log.load_more(line_offset)?;
+        let new_text_lines: Vec<Text<'static>> = new_raw_lines
+            .into_iter()
+            .map(|line| line.into_text())
+            .collect::<Result<Vec<_>, _>>()?;
+        self.display_lines.extend(new_text_lines);
         Ok(())
     }
 
     pub fn select_current_working_copy(&mut self) {
-        if let Some(commit) = self.jj_log.get_current_commit() {
-            self.log_select(commit.flat_log_idx);
+        // Find the working copy commit in commits
+        for (idx, commit) in self.jj_log.commits.iter().enumerate() {
+            if commit.is_working_copy {
+                // Use mapping_buffer to find the line for this commit's tree position
+                let tree_pos = vec![idx];
+                if let Some(line_idx) = self
+                    .mapping_buffer
+                    .lock()
+                    .ok()
+                    .and_then(|buf| buf.get_line_for_tree_position(&tree_pos))
+                {
+                    self.cursor = line_idx;
+                }
+                return;
+            }
         }
     }
 
     pub fn select_parent_node(&mut self) -> Result<()> {
         let tree_pos = self.get_selected_tree_position();
-        if let Some(parent_pos) = get_parent_tree_position(&tree_pos) {
-            let parent_node_idx = self.jj_log.get_tree_node(&parent_pos)?.flat_log_idx();
-            self.log_select(parent_node_idx);
+
+        // Get the selected commit
+        let commit = self
+            .jj_log
+            .commits
+            .get(tree_pos[0])
+            .ok_or_else(|| anyhow::anyhow!("Selected commit not found"))?;
+
+        // Get the first parent's change_id
+        let parent_change_id = commit
+            .parent_change_ids
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("Commit has no parents"))?;
+
+        // Find the parent commit in the commits list
+        for (idx, c) in self.jj_log.commits.iter().enumerate() {
+            if c.change_id == *parent_change_id || c.change_id.starts_with(parent_change_id) {
+                // Use mapping_buffer to find the line for this commit
+                let parent_tree_pos = vec![idx];
+                if let Some(line_idx) = self
+                    .mapping_buffer
+                    .lock()
+                    .ok()
+                    .and_then(|buf| buf.get_line_for_tree_position(&parent_tree_pos))
+                {
+                    self.cursor = line_idx;
+                }
+                return Ok(());
+            }
         }
-        Ok(())
+
+        Err(anyhow::anyhow!("Parent commit not found in loaded commits"))
     }
 
     pub fn select_current_next_sibling_node(&mut self) -> Result<()> {
@@ -333,31 +427,45 @@ impl Model {
     }
 
     fn select_next_sibling_node(&mut self, tree_pos: TreePosition) -> Result<()> {
-        let mut tree_pos = tree_pos;
-        if tree_pos.len() == DIFF_HUNK_LINE_IDX + 1 {
-            tree_pos = get_parent_tree_position(&tree_pos).unwrap();
+        // Get the selected commit
+        let commit = self
+            .jj_log
+            .commits
+            .get(tree_pos[0])
+            .ok_or_else(|| anyhow::anyhow!("Selected commit not found"))?;
+
+        // Find all commits that share at least one parent (siblings)
+        let mut siblings: Vec<(usize, &CommitData)> = Vec::new();
+        for (idx, c) in self.jj_log.commits.iter().enumerate() {
+            // Check if this commit shares any parent with the selected commit
+            let shares_parent = c.parent_change_ids.iter().any(|parent_id| {
+                commit.parent_change_ids.iter().any(|selected_parent_id| {
+                    parent_id == selected_parent_id || parent_id.starts_with(selected_parent_id)
+                })
+            });
+            if shares_parent {
+                siblings.push((idx, c));
+            }
         }
-        let idx = tree_pos[tree_pos.len() - 1];
 
-        match get_parent_tree_position(&tree_pos) {
-            Some(parent_pos) => {
-                let parent_node = self.jj_log.get_tree_node(&parent_pos)?;
-                let children = parent_node.children();
+        // Find current position among siblings
+        let current_idx = siblings
+            .iter()
+            .position(|(idx, _)| *idx == tree_pos[0])
+            .ok_or_else(|| anyhow::anyhow!("Current commit not found in siblings"))?;
 
-                if idx == children.len() - 1 {
-                    self.select_next_sibling_node(parent_pos)?;
-                } else {
-                    let sibling_idx = (idx + 1).min(children.len() - 1);
-                    self.log_list_state
-                        .select(Some(children[sibling_idx].flat_log_idx()));
-                }
+        // Select next sibling if available
+        if let Some((next_idx, _)) = siblings.get(current_idx + 1) {
+            let next_tree_pos = vec![*next_idx];
+            if let Some(line_idx) = self
+                .mapping_buffer
+                .lock()
+                .ok()
+                .and_then(|buf| buf.get_line_for_tree_position(&next_tree_pos))
+            {
+                self.cursor = line_idx;
             }
-            None => {
-                let sibling_idx = (idx + 1).min(self.jj_log.log_tree.len() - 1);
-                self.log_list_state
-                    .select(Some(self.jj_log.log_tree[sibling_idx].flat_log_idx()));
-            }
-        };
+        }
 
         Ok(())
     }
@@ -368,43 +476,126 @@ impl Model {
     }
 
     fn select_prev_sibling_node(&mut self, tree_pos: TreePosition) -> Result<()> {
-        if tree_pos.len() == DIFF_HUNK_LINE_IDX + 1 {
-            let parent_pos = get_parent_tree_position(&tree_pos).unwrap();
-            let parent_node_idx = self.jj_log.get_tree_node(&parent_pos)?.flat_log_idx();
-            self.log_select(parent_node_idx);
-            return Ok(());
+        // Get the selected commit
+        let commit = self
+            .jj_log
+            .commits
+            .get(tree_pos[0])
+            .ok_or_else(|| anyhow::anyhow!("Selected commit not found"))?;
+
+        // Find all commits that share at least one parent (siblings)
+        let mut siblings: Vec<(usize, &CommitData)> = Vec::new();
+        for (idx, c) in self.jj_log.commits.iter().enumerate() {
+            // Check if this commit shares any parent with the selected commit
+            let shares_parent = c.parent_change_ids.iter().any(|parent_id| {
+                commit.parent_change_ids.iter().any(|selected_parent_id| {
+                    parent_id == selected_parent_id || parent_id.starts_with(selected_parent_id)
+                })
+            });
+            if shares_parent {
+                siblings.push((idx, c));
+            }
         }
-        let idx = tree_pos[tree_pos.len() - 1];
 
-        match get_parent_tree_position(&tree_pos) {
-            Some(parent_pos) => {
-                let parent_node = self.jj_log.get_tree_node(&parent_pos)?;
-                let children = parent_node.children();
+        // Find current position among siblings
+        let current_idx = siblings
+            .iter()
+            .position(|(idx, _)| *idx == tree_pos[0])
+            .ok_or_else(|| anyhow::anyhow!("Current commit not found in siblings"))?;
 
-                if idx == 0 {
-                    let parent_node_idx = parent_node.flat_log_idx();
-                    self.log_select(parent_node_idx);
-                } else {
-                    let sibling_idx = idx - 1;
-                    self.log_list_state
-                        .select(Some(children[sibling_idx].flat_log_idx()));
+        // Select previous sibling if available
+        if current_idx > 0 {
+            if let Some((prev_idx, _)) = siblings.get(current_idx - 1) {
+                let prev_tree_pos = vec![*prev_idx];
+                if let Some(line_idx) = self
+                    .mapping_buffer
+                    .lock()
+                    .ok()
+                    .and_then(|buf| buf.get_line_for_tree_position(&prev_tree_pos))
+                {
+                    self.cursor = line_idx;
                 }
             }
-            None => {
-                let sibling_idx = idx.saturating_sub(1);
-                self.log_list_state
-                    .select(Some(self.jj_log.log_tree[sibling_idx].flat_log_idx()));
+        }
+
+        Ok(())
+    }
+
+    /// Execute a function while preserving cursor position.
+    /// Adjusts cursor if lines are inserted/removed before it.
+    fn save_excursion<F>(&mut self, f: F) -> Result<()>
+    where
+        F: FnOnce(&mut Self) -> Result<(usize, isize)>,
+    {
+        let saved_cursor = self.cursor;
+
+        // Execute the operation, which returns (insert/remove idx, count)
+        // Positive count = lines inserted, Negative count = lines removed
+        let (change_idx, change_count) = f(self)?;
+
+        // Adjust cursor if change happened before it
+        if change_idx <= saved_cursor {
+            if change_count > 0 {
+                // Lines inserted, move cursor down
+                self.cursor = saved_cursor + change_count as usize;
+            } else if change_count < 0 {
+                // Lines removed, move cursor up
+                let removed = (-change_count) as usize;
+                self.cursor = saved_cursor.saturating_sub(removed);
             }
-        };
+            // Keep cursor in bounds
+            if self.cursor >= self.display_lines.len() && !self.display_lines.is_empty() {
+                self.cursor = self.display_lines.len() - 1;
+            }
+            // Adjust scroll to keep cursor visible
+            self.ensure_cursor_visible();
+        }
 
         Ok(())
     }
 
     pub fn toggle_current_fold(&mut self) -> Result<()> {
-        let tree_pos = self.get_selected_tree_position();
-        let log_list_selected_idx = self.jj_log.toggle_fold(&self.global_args, &tree_pos)?;
-        self.sync_log_list()?;
-        self.log_select(log_list_selected_idx);
+        // Get tree position for current cursor line
+        let tree_pos = {
+            let buffer = self
+                .mapping_buffer
+                .lock()
+                .map_err(|e| anyhow::anyhow!("Failed to lock mapping buffer: {}", e))?;
+            buffer
+                .get_tree_position(self.cursor)
+                .cloned()
+                .unwrap_or_default()
+        };
+
+        // Get child line range BEFORE toggle (for folding)
+        let child_range = {
+            let buffer = self
+                .mapping_buffer
+                .lock()
+                .map_err(|e| anyhow::anyhow!("Failed to lock mapping buffer: {}", e))?;
+            buffer.get_child_line_range(&tree_pos)
+        };
+
+        // Toggle fold via JjLog (handles MappingBuffer updates internally)
+        let (new_lines, insert_idx) =
+            self.jj_log
+                .toggle_fold(&self.global_args, &tree_pos, &self.mapping_buffer)?;
+
+        if !new_lines.is_empty() {
+            // UNFOLDING: Insert new display lines at insertion point
+            for (i, line) in new_lines.into_iter().enumerate() {
+                self.display_lines.insert(insert_idx + i, line);
+            }
+        } else {
+            // FOLDING: Remove child lines from display_lines
+            if let Some((start, end)) = child_range {
+                // Remove lines from display_lines (in reverse to maintain indices)
+                for i in (start..end).rev() {
+                    self.display_lines.remove(i);
+                }
+            }
+        }
+
         Ok(())
     }
 
@@ -506,25 +697,40 @@ impl Model {
     }
 
     pub fn scroll_down_once(&mut self) {
-        if self.log_selected() <= self.log_offset() + self.log_list_scroll_padding {
+        if self.cursor <= self.scroll_offset + self.log_list_scroll_padding {
             let _ = self.select_next_node();
         }
-        *self.log_list_state.offset_mut() = self.log_offset() + 1;
+        self.scroll_offset += 1;
+        self.ensure_cursor_visible();
     }
 
     pub fn scroll_up_once(&mut self) {
-        if self.log_offset() == 0 {
-            return;
-        }
         let last_node_visible = self.line_dist_to_dest_node(
             self.log_list_layout.height as usize - 1,
-            self.log_offset(),
+            self.scroll_offset,
             &ScrollDirection::Down,
         );
-        if self.log_selected() >= last_node_visible - 1 - self.log_list_scroll_padding {
+        if self.cursor >= last_node_visible.saturating_sub(1 + self.log_list_scroll_padding) {
             self.select_prev_node();
         }
-        *self.log_list_state.offset_mut() = self.log_offset().saturating_sub(1);
+        self.scroll_offset = self.scroll_offset.saturating_sub(1);
+        self.ensure_cursor_visible();
+    }
+
+    /// Ensure cursor stays within visible area, adjusting scroll_offset if needed.
+    fn ensure_cursor_visible(&mut self) {
+        let visible_height = self.log_list_layout.height as usize;
+
+        // If cursor is above visible area, scroll up
+        if self.cursor < self.scroll_offset {
+            self.scroll_offset = self.cursor;
+        }
+
+        // If cursor is below visible area, scroll down
+        let last_visible = self.scroll_offset + visible_height.saturating_sub(1);
+        if self.cursor > last_visible {
+            self.scroll_offset = self.cursor.saturating_sub(visible_height.saturating_sub(1));
+        }
     }
 
     pub fn scroll_down_page(&mut self) {
@@ -536,26 +742,26 @@ impl Model {
     }
 
     fn scroll_lines(&mut self, num_lines: usize, direction: &ScrollDirection) {
-        let selected_node_dist_from_offset = self.log_selected() - self.log_offset();
+        let selected_node_dist_from_offset = self.cursor.saturating_sub(self.scroll_offset);
         let mut target_offset =
-            self.line_dist_to_dest_node(num_lines, self.log_offset(), direction);
+            self.line_dist_to_dest_node(num_lines, self.scroll_offset, direction);
         let mut target_node = target_offset + selected_node_dist_from_offset;
         match direction {
             ScrollDirection::Down => {
-                if target_offset == self.log_list.len() - 1 {
+                if target_offset >= self.display_lines.len().saturating_sub(1) {
                     target_node = target_offset;
-                    target_offset = self.log_offset();
+                    target_offset = self.scroll_offset;
                 }
             }
             ScrollDirection::Up => {
-                // If we're already at the top of the page, then move selection to the top as well
-                if target_offset == 0 && target_offset == self.log_offset() {
+                if target_offset == 0 {
                     target_node = 0;
                 }
             }
         }
-        self.log_select(target_node);
-        *self.log_list_state.offset_mut() = target_offset;
+        self.cursor = target_node;
+        self.scroll_offset = target_offset;
+        self.ensure_cursor_visible();
     }
 
     pub fn handle_mouse_click(&mut self, row: u16, column: u16) {
@@ -610,28 +816,14 @@ impl Model {
         starting_node: usize,
         direction: &ScrollDirection,
     ) -> usize {
-        let mut current_node = starting_node;
-        let mut lines_traversed = 0;
-        loop {
-            let lines_in_node = self.log_list[current_node].lines.len();
-            lines_traversed += lines_in_node;
-
-            // Stop if we've found the dest node or have no further to traverse
-            if match direction {
-                ScrollDirection::Down => current_node == self.log_list.len() - 1,
-                ScrollDirection::Up => current_node == 0,
-            } || lines_traversed > line_dist
-            {
-                break;
+        // With display_lines, each line is 1 unit tall, so the calculation is simple
+        let target = match direction {
+            ScrollDirection::Down => {
+                (starting_node + line_dist).min(self.display_lines.len().saturating_sub(1))
             }
-
-            match direction {
-                ScrollDirection::Down => current_node += 1,
-                ScrollDirection::Up => current_node -= 1,
-            }
-        }
-
-        current_node
+            ScrollDirection::Up => starting_node.saturating_sub(line_dist),
+        };
+        target
     }
 
     pub fn save_selection(&mut self) -> Result<()> {
@@ -750,7 +942,7 @@ impl Model {
                     let tree_pos = self.get_selected_tree_position();
                     self.jj_log
                         .get_tree_commit(&tree_pos)
-                        .and_then(|c| c.description_first_line.clone())
+                        .map(|c| c.description.lines().next().unwrap_or("").to_string())
                         .unwrap_or_default()
                 }
             };
@@ -1410,23 +1602,18 @@ impl Model {
     /// Calculate cursor position for bookmark creation in the log list.
     /// The bookmark is injected at the selected commit line with format: " [bookmark]"
     fn calculate_bookmark_cursor_position(&self) -> Option<(u16, u16)> {
-        let selected_idx = self.log_list_state.selected()?;
-        let offset = self.log_list_state.offset();
+        let selected_idx = self.cursor;
+        let offset = self.scroll_offset;
 
-        // Calculate Y position within the list, accounting for multi-line items
-        // We need to count the total visual height of all items from offset to selected_idx
-        let mut visual_row = 0u16;
-        for idx in offset..selected_idx {
-            if let Some(item) = self.log_list.get(idx) {
-                visual_row += item.lines.len() as u16;
-            }
-        }
+        // Calculate Y position within the list
+        // Each display line is 1 unit tall, so the math is simple
+        let visual_row = (selected_idx.saturating_sub(offset)) as u16;
         let y = self.log_list_layout.y + visual_row;
 
         // X position: need to account for the prefix before the bookmark text
         // This is approximate - we need to know the line's content up to the bookmark
         // The bookmark is appended after the commit line with " [" prefix
-        let line = self.log_list.get(selected_idx)?;
+        let line = self.display_lines.get(selected_idx)?;
 
         // Find where change_id ends to calculate the prefix
         // Format is typically: graph chars + symbol + " " + change_id + " " + ...
@@ -1442,7 +1629,7 @@ impl Model {
         let head_offset = self
             .jj_log
             .get_tree_commit(&tree_pos)
-            .map(|c| if c.current_working_copy { 2 } else { 0 })
+            .map(|c| if c.is_working_copy { 2 } else { 0 })
             .unwrap_or(0);
 
         let x = (self.log_list_layout.x
@@ -1457,8 +1644,8 @@ impl Model {
     /// Calculate cursor position for description editing in the log list.
     /// The description is rendered across multiple lines below the selected commit.
     fn calculate_description_cursor_position(&self) -> Option<(u16, u16)> {
-        let selected_idx = self.log_list_state.selected()?;
-        let offset = self.log_list_state.offset();
+        let selected_idx = self.cursor;
+        let offset = self.scroll_offset;
         let relative_row = selected_idx.saturating_sub(offset);
 
         // Find which line contains the cursor
@@ -2035,10 +2222,10 @@ impl Model {
 
     /// Get the line number from a diff hunk line at the given tree position.
     /// Uses the LogTreeNode::line_number trait method.
-    fn get_diff_line_number(&mut self, tree_pos: &TreePosition) -> Option<u32> {
-        // Get the diff hunk line node and call line_number()
-        let node = self.jj_log.get_tree_node(tree_pos).ok()?;
-        node.line_number()
+    fn get_diff_line_number(&mut self, _tree_pos: &TreePosition) -> Option<u32> {
+        // Diff hunks were removed from the architecture
+        // This method is kept for compatibility but always returns None
+        None
     }
 
     pub fn jj_evolog(&mut self, patch: bool, term: Term) -> Result<()> {
@@ -2746,48 +2933,40 @@ impl Model {
 
     pub fn jj_squash(&mut self, mode: SquashMode, term: Term) -> Result<()> {
         log::info!("Squashing changes, mode: {:?}", mode);
-        let cmd = match mode {
+        match mode {
             SquashMode::Default => {
-                let tree_pos = self.get_selected_tree_position();
-                let Some(commit) = self.jj_log.get_tree_commit(&tree_pos) else {
+                // Squash the selected change
+                let Some(change_id) = self.get_selected_change_id() else {
                     return self.invalid_selection();
                 };
-                let maybe_file_path = self.get_selected_file_path();
-
-                if commit.description_first_line.is_none() {
-                    JjCommand::squash_noninteractive(
-                        &commit.change_id,
-                        maybe_file_path,
-                        self.global_args.clone(),
-                    )
-                } else {
-                    JjCommand::squash_interactive(
-                        &commit.change_id,
-                        maybe_file_path,
-                        self.global_args.clone(),
-                        term,
-                    )
-                }
+                let file_path = self.get_selected_file_path();
+                let cmd = JjCommand::squash_interactive(
+                    change_id,
+                    file_path,
+                    self.global_args.clone(),
+                    term,
+                );
+                self.queue_jj_command(cmd)
             }
             SquashMode::Into => {
+                // Squash from saved selection into current selection
                 let Some(from_change_id) = self.get_saved_change_id() else {
                     return self.invalid_selection();
                 };
-                let maybe_file_path = self.get_saved_file_path();
                 let Some(into_change_id) = self.get_selected_change_id() else {
                     return self.invalid_selection();
                 };
-                JjCommand::squash_into_interactive(
+                let file_path = self.get_selected_file_path();
+                let cmd = JjCommand::squash_into_interactive(
                     from_change_id,
                     into_change_id,
-                    maybe_file_path,
+                    file_path,
                     self.global_args.clone(),
                     term,
-                )
+                );
+                self.queue_jj_command(cmd)
             }
-        };
-
-        self.queue_jj_command(cmd)
+        }
     }
 
     pub fn jj_status(&mut self, term: Term) -> Result<()> {
@@ -3377,12 +3556,13 @@ impl Model {
         std::env::set_current_dir(&new_workspace_path)?;
 
         // Reinitialize JjLog
-        self.jj_log = JjLog::new()?;
+        let (jj_log, _display_lines) = JjLog::new(self.mapping_buffer.clone())?;
+        self.jj_log = jj_log;
 
         // Clear cached view state
-        self.log_list.clear();
-        self.log_list_state = ListState::default();
-        self.log_list_tree_positions.clear();
+        self.display_lines.clear();
+        self.cursor = 0;
+        self.scroll_offset = 0;
 
         // Clear saved selections (they won't transfer between workspaces)
         self.saved_change_id = None;

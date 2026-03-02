@@ -542,7 +542,6 @@ pub enum ViewMode {
 }
 
 pub fn update(terminal: Term, model: &mut Model) -> Result<()> {
-    log::debug!("Processing update cycle");
     model.process_jj_command_queue()?;
 
     let mut current_msg = handle_event(model)?;

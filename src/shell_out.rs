@@ -1,3 +1,5 @@
+use crate::commit_data::CommitData;
+use crate::log_tree::strip_ansi;
 use crate::model::GlobalArgs;
 use crate::terminal::{self, Term};
 use anyhow::{Result, anyhow};
@@ -186,6 +188,23 @@ impl JjCommand {
 
     pub fn diff_summary(change_id: &str, global_args: GlobalArgs) -> Self {
         let args = ["diff", "--summary", "--revisions", change_id];
+        Self::_new(&args, global_args, None, ReturnOutput::Stdout)
+    }
+
+    /// Get diff summary as JSON for structured parsing.
+    /// Returns JSON lines with path, status, and source_path.
+    pub fn diff_summary_json(change_id: &str, global_args: GlobalArgs) -> Self {
+        let template = r#"{"path": path, "status": status, "source_path": source_path}"#;
+        let args = [
+            "diff",
+            "--summary",
+            "--revisions",
+            change_id,
+            "--template",
+            template,
+            "--color",
+            "never",
+        ];
         Self::_new(&args, global_args, None, ReturnOutput::Stdout)
     }
 
@@ -708,6 +727,276 @@ impl JjCommand {
             Err(JjCommandError::new_failed(stderr))
         }
     }
+
+    /// Run dual log commands to get both display and structured data.
+    ///
+    /// This runs two jj log commands simultaneously:
+    /// - One with builtin_log_compact template for display output
+    /// - One with JSON template for structured data parsing
+    ///
+    /// # Arguments
+    /// - `revset`: The revision set to query
+    /// - `limit`: Maximum number of commits to fetch
+    /// - `global_args`: Global arguments for jj commands
+    ///
+    /// # Returns
+    /// - `Ok((Vec<CommitData>, Vec<String>))`: Structured commit data and display lines
+    /// - `Err(JjCommandError)`: If either command fails
+    pub fn log_dual(
+        revset: &str,
+        limit: usize,
+        global_args: GlobalArgs,
+    ) -> Result<(Vec<CommitData>, Vec<String>), JjCommandError> {
+        // Run display log command
+        let display_cmd = Self::log(revset, limit, global_args.clone());
+        let display_output = display_cmd.run()?;
+        let display_lines: Vec<String> = display_output.lines().map(|s| s.to_string()).collect();
+
+        // Build JSON template for structured data
+        // Note: parents field omitted - jj template list mapping syntax varies by version
+        let json_template = r###"
+              "{" ++
+                "\"change_id\": " ++ json(change_id) ++ ", " ++
+                "\"commit_id\": " ++ json(commit_id) ++ ", " ++
+                "\"description\": " ++ json(description) ++ ", " ++
+                "\"author\": " ++ json(author.email()) ++ ", " ++
+                "\"timestamp\": " ++ stringify(author.timestamp().format("%s")) ++ ", " ++
+                "\"parent_change_ids\": [" ++ parents.map(|c| json(c.change_id())).join(", ") ++ "], " ++
+                "\"is_working_copy\": " ++ json(current_working_copy) ++ ", " ++
+                "\"is_empty\": " ++ json(empty) ++ ", " ++
+                "\"has_conflict\": " ++ json(conflict) ++
+              "}\n"
+        "###;
+
+        // Run JSON log command
+        let json_args = [
+            "log",
+            "--no-graph",
+            "--template",
+            json_template,
+            "--revisions",
+            revset,
+            "--limit",
+            &limit.to_string(),
+        ];
+        let json_cmd = Self::_new(&json_args, global_args, None, ReturnOutput::Stdout);
+        let json_output = json_cmd.run()?;
+
+        // Parse JSON lines into CommitData
+        let mut commits = Vec::new();
+        let mut parse_failures = 0;
+        let mut empty_lines = 0;
+        for line in json_output.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                empty_lines += 1;
+                continue;
+            }
+            match serde_json::from_str::<CommitData>(line) {
+                Ok(commit) => {
+                    log::debug!(
+                        "log_dual: parsed commit {} with change_id {}",
+                        commits.len(),
+                        commit.change_id
+                    );
+                    commits.push(commit);
+                }
+                Err(e) => {
+                    parse_failures += 1;
+                    log::warn!(
+                        "log_dual: Failed to parse commit JSON: {} - line: {}",
+                        e,
+                        line
+                    );
+                    continue;
+                }
+            }
+        }
+
+        log::info!(
+            "log_dual: parsed {} commits, {} parse failures, {} empty lines from {} display lines",
+            commits.len(),
+            parse_failures,
+            empty_lines,
+            display_lines.len()
+        );
+
+        Ok((commits, display_lines))
+    }
+}
+
+/// Build display mappings by correlating display lines to commit indices.
+///
+/// Analyzes display lines to find which commit each line belongs to using
+/// change_id pattern matching. Returns the mappings needed for MappingBuffer::new().
+///
+/// # Arguments
+/// - `display_lines`: The display output lines from jj log
+/// - `commits`: The structured commit data with change_ids
+///
+/// # Returns
+/// A tuple of (line_to_tree_pos, tree_index_to_line_range) for MappingBuffer
+/// Extract change_id from a display line.
+///
+/// Skips leading non-alphabetic characters (graph chars, symbols, whitespace),
+/// then reads exactly 8 alphabetical characters.
+///
+/// - `line`: The display line from jj log output
+fn extract_change_id(line: &str) -> Option<String> {
+    // Step 1: Strip ANSI codes
+    let stripped = strip_ansi(line);
+
+    // Step 2: Strip all leading non-alphanumeric characters (graph symbols, spaces, etc.)
+    // This handles @, ○, ◆, │, ~, and any amount of whitespace
+    let cleaned: String = stripped
+        .chars()
+        .skip_while(|c| !c.is_ascii_alphanumeric())
+        .collect();
+
+    // Step 3: Extract the first 8 alphabetic characters (the change_id)
+    // Skip any remaining spaces after the graph symbols
+    let content = cleaned.trim_start();
+    if content.len() < 8 {
+        log::debug!(
+            "extract_change_id: too short after cleaning ({} chars)",
+            content.len()
+        );
+        return None;
+    }
+
+    // Read exactly 8 characters for change_id candidate
+    let candidate = &content[..8];
+
+    // Verify all 8 chars are alphabetical (jj change_ids are lowercase letters)
+    let all_alpha = candidate.chars().all(|c| c.is_ascii_alphabetic());
+    if !all_alpha {
+        return None;
+    }
+
+    // Verify 9th char is whitespace or end of string (jj uses space after change_id)
+    let ninth_space =
+        content.len() == 8 || content.chars().nth(8).map_or(true, |c| c.is_whitespace());
+    if !ninth_space {
+        return None;
+    }
+
+    Some(candidate.to_string())
+}
+
+/// Build display mappings by correlating display lines to commit indices.
+///
+/// Analyzes display lines to find which commit each line belongs to by
+/// extracting change_ids at known positions. Returns the mappings needed
+/// for MappingBuffer::new().
+///
+/// # Arguments
+/// - `display_lines`: The display output lines from jj log
+/// - `commits`: The structured commit data with change_ids
+/// - `line_offset`: Offset to add to line indices (for appending)
+///
+/// # Returns
+/// A tuple of (line_to_tree_pos, tree_index_to_line_range) for MappingBuffer
+pub fn build_display_mappings(
+    display_lines: &[String],
+    commits: &[CommitData],
+    line_offset: usize,
+) -> (
+    Vec<Vec<usize>>,
+    std::collections::HashMap<usize, (usize, usize)>,
+) {
+    use std::collections::HashMap;
+
+    log::debug!(
+        "build_display_mappings: {} display_lines, {} commits, offset {}",
+        display_lines.len(),
+        commits.len(),
+        line_offset
+    );
+    log::debug!(
+        "build_display_mappings: commit change_ids: {:?}",
+        commits.iter().map(|c| &c.change_id).collect::<Vec<_>>()
+    );
+
+    let mut line_to_tree_pos: Vec<Vec<usize>> = Vec::new();
+    let mut tree_index_to_line_range: HashMap<usize, (usize, usize)> = HashMap::new();
+
+    let mut current_commit_idx: Option<usize> = None;
+    let mut commit_start_line: Option<usize> = None;
+    let mut unmatched_lines: Vec<usize> = Vec::new();
+
+    for (line_idx, line) in display_lines.iter().enumerate() {
+        // Try to extract change_id from this line
+        if let Some(found_change_id) = extract_change_id(line) {
+            // Find which commit this change_id belongs to
+            if let Some(commit_idx) = commits.iter().position(|c| {
+                c.change_id.starts_with(&found_change_id) || c.change_id == found_change_id
+            }) {
+                log::debug!(
+                    "build_display_mappings: line {} matched commit idx {} (change_id {:?})",
+                    line_idx,
+                    commit_idx,
+                    commits[commit_idx].change_id
+                );
+                // Close previous commit range if we were tracking one
+                if let Some(prev_idx) = current_commit_idx {
+                    if let Some(start) = commit_start_line {
+                        tree_index_to_line_range
+                            .insert(prev_idx, (start + line_offset, line_idx + line_offset));
+                    }
+                }
+
+                // Start tracking new commit
+                current_commit_idx = Some(commit_idx);
+                commit_start_line = Some(line_idx);
+            } else {
+                log::warn!(
+                    "build_display_mappings: line {} extracted change_id {:?} but no matching commit found",
+                    line_idx,
+                    found_change_id
+                );
+            }
+        } else {
+            log::debug!(
+                "build_display_mappings: line {} - no change_id extracted (line content: {:?})",
+                line_idx,
+                line
+            );
+        }
+
+        // Map this line to the current commit's tree position
+        if let Some(commit_idx) = current_commit_idx {
+            line_to_tree_pos.push(vec![commit_idx]);
+        } else {
+            line_to_tree_pos.push(vec![]);
+            unmatched_lines.push(line_idx);
+        }
+    }
+
+    if !unmatched_lines.is_empty() {
+        log::warn!(
+            "build_display_mappings: {} lines with empty TreePosition: {:?}",
+            unmatched_lines.len(),
+            &unmatched_lines[..unmatched_lines.len().min(10)]
+        );
+    }
+
+    // Close the last commit's range
+    if let Some(commit_idx) = current_commit_idx {
+        if let Some(start) = commit_start_line {
+            tree_index_to_line_range.insert(
+                commit_idx,
+                (start + line_offset, display_lines.len() + line_offset),
+            );
+        }
+    }
+
+    log::debug!(
+        "build_display_mappings: completed - line_to_tree_pos has {} entries, tree_index_to_line_range has {} entries",
+        line_to_tree_pos.len(),
+        tree_index_to_line_range.len()
+    );
+
+    (line_to_tree_pos, tree_index_to_line_range)
 }
 
 #[derive(Debug)]
@@ -977,4 +1266,63 @@ fn strip_non_style_ansi(str: &str) -> String {
     let non_style_ansi_regex =
         Regex::new(r"\x1b(\[[0-9;?]*[ -/]*([@-l]|[n-~])|\].*?(\x07|\x1b\\)|P.*?\x1b\\)").unwrap();
     non_style_ansi_regex.replace_all(str, "").to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_change_id_simple() {
+        // Plain line without ANSI
+        let line = "@  qvmzlrxu alexispurslane@pm.me 2026-03-02 17:43:34 ffaac8d7";
+        assert_eq!(extract_change_id(line), Some("qvmzlrxu".to_string()));
+    }
+
+    #[test]
+    fn test_extract_change_id_with_graph_chars() {
+        // Different graph characters
+        assert_eq!(
+            extract_change_id("○  lmomxzrx alexispurslane@pm.me"),
+            Some("lmomxzrx".to_string())
+        );
+        assert_eq!(
+            extract_change_id("◆  vstovwow main 38dd4dc4"),
+            Some("vstovwow".to_string())
+        );
+        assert_eq!(
+            extract_change_id("│  (no description set)"),
+            None // Should fail - no change_id
+        );
+    }
+
+    #[test]
+    fn test_extract_change_id_with_ansi() {
+        // Line with ANSI color codes (simulating what jj outputs)
+        let line = "\u{1b}[1m\u{1b}[38;5;14m●\u{1b}[0m  \u{1b}[1m\u{1b}[38;5;5mkrx\u{1b}[0m\u{1b}[38;5;8momvwm\u{1b}[39m \u{1b}[38;5;3malexispurslane@pm.me\u{1b}[39m";
+        let result = extract_change_id(line);
+        println!("ANSI line result: {:?}", result);
+        // After stripping ANSI: "●  krxomvwm alexispurslane@pm.me"
+        // Should extract "krxomvwm"
+        assert_eq!(result, Some("krxomvwm".to_string()));
+    }
+
+    #[test]
+    fn test_extract_change_id_debug_real_cases() {
+        // Real cases from the log that were failing
+        let cases = vec![
+            ("@  qvmzlrxu alexispurslane@pm.me", Some("qvmzlrxu")),
+            ("○  lmomxzrx alexispurslane@pm.me", Some("lmomxzrx")),
+            ("◆  vstovwow alexispurslane@pm.me", Some("vstovwow")),
+            ("│  (no description set)", None),
+            ("│  mapping buffer! :)", None),
+        ];
+
+        for (line, expected) in cases {
+            let result = extract_change_id(line);
+            println!("Input: {:?}", line);
+            println!("Expected: {:?}, Got: {:?}\n", expected, result);
+            assert_eq!(result, expected.map(|s| s.to_string()));
+        }
+    }
 }

@@ -1,25 +1,21 @@
+use crate::commit_data::{CommitData, FileDiff, FileDiffStatus};
+use crate::mapping_buffer::MappingBuffer;
 use crate::model::GlobalArgs;
-use crate::shell_out::JjCommand;
-use ansi_to_tui::IntoText;
-use anyhow::{Error, Result, anyhow, bail};
-use ratatui::{
-    style::{Color, Modifier, Style},
-    text::{Line, Span, Text},
-};
+use crate::shell_out::{JjCommand, build_display_mappings};
+use anyhow::{Result, anyhow};
+use ratatui::text::Text;
 use regex::Regex;
-use std::fmt;
-use std::sync::OnceLock;
+use std::sync::{Arc, Mutex, OnceLock};
 
-fn get_re_fields() -> &'static Regex {
-    static RE_FIELDS: OnceLock<Regex> = OnceLock::new();
-    RE_FIELDS.get_or_init(|| {
-        Regex::new(r"^([ │]*)(.)([ │]*)  ([k-z]{8,}(?:/\d+)?)\s+.*\s+([a-f0-9]{8,})\s*(\S*)\s*\n([ │├┤┬┴╭╮╯╰─┼]*)(\(empty\))?\s*(.*)").unwrap()
-    })
-}
-
-fn get_re_lines() -> &'static Regex {
-    static RE_LINES: OnceLock<Regex> = OnceLock::new();
-    RE_LINES.get_or_init(|| Regex::new(r"^[ │]*\S+[ │]*(.*)\n[ │├┤┬┴╭╮╯╰─┼]*(.*)").unwrap())
+/// Strip ANSI escape codes from a string.
+///
+/// Removes all ANSI escape sequences (e.g., color codes, cursor movement)
+/// from the input string and returns the cleaned text.
+pub fn strip_ansi(s: &str) -> String {
+    // ANSI escape sequences: ESC [ ... m (color codes) or ESC [ ... other commands
+    static RE_ANSI: OnceLock<Regex> = OnceLock::new();
+    let re = RE_ANSI.get_or_init(|| Regex::new(r"\x1b\[[0-9;]*m").unwrap());
+    re.replace_all(s, "").to_string()
 }
 
 const INITIAL_LOAD_COUNT: usize = 200;
@@ -27,175 +23,233 @@ const LOAD_BATCH_SIZE: usize = 200;
 
 #[derive(Debug)]
 pub struct JjLog {
-    pub log_tree: Vec<CommitOrText>,
-    loaded_count: usize,
-    last_change_id: Option<String>,
+    pub commits: Vec<CommitData>,
     revset: String,
     global_args: GlobalArgs,
+    mapping_buffer: Arc<Mutex<MappingBuffer>>,
 }
 
 impl JjLog {
-    pub fn new() -> Result<Self> {
-        Ok(JjLog {
-            log_tree: Vec::new(),
-            loaded_count: 0,
-            last_change_id: None,
+    /// Create a new JjLog with a shared MappingBuffer.
+    ///
+    /// - `mapping_buffer`: Shared Arc<Mutex<MappingBuffer>> for population
+    ///
+    /// Returns (Self, display_lines) where display_lines are the raw log output lines.
+    pub fn new(mapping_buffer: Arc<Mutex<MappingBuffer>>) -> Result<(Self, Vec<String>)> {
+        let jj_log = JjLog {
+            commits: Vec::new(),
             revset: String::new(),
             global_args: GlobalArgs {
                 repository: String::new(),
                 ignore_immutable: false,
             },
-        })
+            mapping_buffer,
+        };
+        Ok((jj_log, Vec::new()))
     }
 
-    pub fn load_log_tree(&mut self, global_args: &GlobalArgs, revset: &str) -> Result<()> {
+    pub fn load_log_tree(&mut self, global_args: &GlobalArgs, revset: &str) -> Result<Vec<String>> {
         self.global_args = global_args.clone();
         self.revset = revset.to_string();
-        self.log_tree = CommitOrText::load_all(global_args, revset, INITIAL_LOAD_COUNT)?;
-        self.loaded_count = self.log_tree.len();
-        self.last_change_id = Self::get_last_change_id(&self.log_tree);
-        Ok(())
+
+        // Use dual-source loading: JSON for data, template for display
+        let (commits, display_lines) =
+            JjCommand::log_dual(revset, INITIAL_LOAD_COUNT, global_args.clone())?;
+
+        // Build display mappings from display_lines and commits
+        let (line_to_tree_pos, tree_index_to_line_range) =
+            build_display_mappings(&display_lines, &commits, 0);
+
+        // Populate the shared MappingBuffer
+        {
+            let mut buffer = self
+                .mapping_buffer
+                .lock()
+                .map_err(|e| anyhow!("Failed to lock mapping buffer: {}", e))?;
+            buffer.rebuild(line_to_tree_pos, tree_index_to_line_range)?;
+        }
+
+        // Store the structured commits
+        self.commits = commits;
+
+        Ok(display_lines)
     }
 
-    fn get_last_change_id(log_tree: &[CommitOrText]) -> Option<String> {
-        log_tree.iter().rev().find_map(|cot| {
-            if let CommitOrText::Commit(commit) = cot {
-                Some(commit.change_id.clone())
-            } else {
-                None
-            }
-        })
-    }
-
-    pub fn load_more(&mut self) -> Result<bool> {
-        let last_id = match &self.last_change_id {
-            Some(id) => id.clone(),
-            None => return Ok(false),
+    pub fn load_more(&mut self, line_offset: usize) -> Result<(Vec<String>, bool)> {
+        // Get the last commit's change_id to use as offset
+        let last_id = self.commits.last().map(|c| c.change_id.clone());
+        let last_id = match last_id {
+            Some(id) => id,
+            None => return Ok((Vec::new(), false)),
         };
 
-        // Use revset to get commits older than last_change_id (ancestors of last_id's parents)
+        // Use revset to get commits older than last_change_id
         let revset = format!("..{}-", last_id);
-        let new_commits = CommitOrText::load_all(&self.global_args, &revset, LOAD_BATCH_SIZE)?;
+        let (commits, display_lines) =
+            JjCommand::log_dual(&revset, LOAD_BATCH_SIZE, self.global_args.clone())?;
 
-        let has_more = !new_commits.is_empty();
-        if has_more {
-            self.log_tree.extend(new_commits);
-            self.loaded_count = self.log_tree.len();
-            self.last_change_id = Self::get_last_change_id(&self.log_tree);
+        let new_count = commits.len();
+        if new_count > 0 {
+            self.commits.extend(commits);
+
+            let (line_to_tree_pos, tree_index_to_line_range) =
+                build_display_mappings(&display_lines, &self.commits, line_offset);
+
+            let mut buffer = self
+                .mapping_buffer
+                .lock()
+                .map_err(|e| anyhow!("Failed to lock mapping buffer: {}", e))?;
+            let _ = buffer.notify_appended(line_to_tree_pos, tree_index_to_line_range);
         }
-        Ok(has_more)
+
+        Ok((display_lines, new_count > 0))
     }
 
-    pub fn flatten_log(&mut self) -> Result<(Vec<Text<'static>>, Vec<TreePosition>)> {
-        let mut log_list = Vec::new();
-        let mut log_list_tree_positions = Vec::new();
-
-        for (commit_or_text_idx, commit_or_text) in self.log_tree.iter_mut().enumerate() {
-            commit_or_text.flatten(
-                vec![commit_or_text_idx],
-                &mut log_list,
-                &mut log_list_tree_positions,
-            )?;
-        }
-
-        Ok((log_list, log_list_tree_positions))
+    /// Get commit data by change_id
+    pub fn get_commit(&self, change_id: &str) -> Option<&CommitData> {
+        self.commits
+            .iter()
+            .find(|c| c.change_id == change_id || c.change_id.starts_with(change_id))
     }
 
     pub fn get_tree_node(&mut self, tree_pos: &TreePosition) -> Result<&mut dyn LogTreeNode> {
-        // Traverse to commit
-        let commit_or_text = &mut self.log_tree[tree_pos[COMMIT_OR_TEXT_IDX]];
-        let commit = match commit_or_text {
-            CommitOrText::InfoText(info_text) => {
-                return Ok(info_text);
-            }
-            CommitOrText::Commit(commit) => commit,
-        };
-
-        let file_diff_idx = if tree_pos.len() <= FILE_DIFF_IDX {
-            return Ok(commit);
-        } else {
-            tree_pos[FILE_DIFF_IDX]
-        };
-
-        // Traverse to file diff
-        if !commit.loaded {
-            bail!("Trying to get unloaded file diffs for commit");
-        }
-        let file_diff = &mut commit.file_diffs[file_diff_idx];
-        let diff_hunk_idx = if tree_pos.len() <= DIFF_HUNK_IDX {
-            return Ok(file_diff);
-        } else {
-            tree_pos[DIFF_HUNK_IDX]
-        };
-
-        // Traverse to diff hunk
-        if !file_diff.loaded {
-            bail!("Trying to get unloaded diff hunks for file diff");
-        }
-        let diff_hunk = &mut file_diff.diff_hunks[diff_hunk_idx];
-        let diff_hunk_line_idx = if tree_pos.len() <= DIFF_HUNK_LINE_IDX {
-            return Ok(diff_hunk);
-        } else {
-            tree_pos[DIFF_HUNK_LINE_IDX]
-        };
-
-        // Traverse to diff hunk line
-        let diff_hunk_line = &mut diff_hunk.diff_hunk_lines[diff_hunk_line_idx];
-        Ok(diff_hunk_line)
+        self.get_tree_node_mut(tree_pos)
+            .ok_or_else(|| anyhow::anyhow!("Node not found at tree position {:?}", tree_pos))
     }
 
-    pub fn get_tree_commit(&self, tree_pos: &TreePosition) -> Option<&Commit> {
-        let commit_or_text = &self.log_tree[tree_pos[COMMIT_OR_TEXT_IDX]];
-        match commit_or_text {
-            CommitOrText::InfoText(_) => None,
-            CommitOrText::Commit(commit) => Some(commit),
-        }
+    pub fn get_tree_commit(&self, tree_pos: &TreePosition) -> Option<&CommitData> {
+        let commit_idx = tree_pos.first()?;
+        self.commits.get(*commit_idx)
     }
 
     pub fn get_tree_file_diff(&self, tree_pos: &TreePosition) -> Option<&FileDiff> {
-        if tree_pos.len() <= FILE_DIFF_IDX {
-            return None;
+        let commit_idx = tree_pos.first()?;
+        let commit = self.commits.get(*commit_idx)?;
+        let file_idx = tree_pos.get(1)?;
+        let file_diffs = commit.file_diffs.as_ref()?;
+        file_diffs.get(*file_idx)
+    }
+
+    pub fn get_current_commit(&self) -> Option<&CommitData> {
+        self.commits.iter().find(|c| c.is_working_copy)
+    }
+
+    /// Get a mutable reference to a node at the given tree position.
+    ///
+    /// tree_pos format: [commit_idx] or [commit_idx, file_idx] or [commit_idx, file_idx, hunk_idx]
+    fn get_tree_node_mut(&mut self, tree_pos: &TreePosition) -> Option<&mut dyn LogTreeNode> {
+        let commit_idx = tree_pos.first().copied()?;
+        let commit = self.commits.get_mut(commit_idx)?;
+
+        if tree_pos.len() == 1 {
+            return Some(commit);
         }
-        let commit = self.get_tree_commit(tree_pos)?;
-        Some(&commit.file_diffs[tree_pos[FILE_DIFF_IDX]])
+
+        let file_idx = tree_pos.get(1).copied()?;
+        let file_diffs = commit.file_diffs.as_mut()?;
+        let file_diff = file_diffs.get_mut(file_idx)?;
+
+        if tree_pos.len() == 2 {
+            return Some(file_diff);
+        }
+
+        // Only support commit and file levels, no hunks
+        Some(file_diff)
     }
 
-    pub fn get_current_commit(&self) -> Option<&Commit> {
-        // TODO: cache this instead of looping each time?
-        self.log_tree.iter().find_map(|item| match item {
-            CommitOrText::Commit(commit) if commit.current_working_copy => Some(commit),
-            _ => None,
-        })
-    }
-
+    /// Toggle fold state at the given tree position and return display lines for any newly visible content.
+    ///
+    /// This is called by Model when user toggles fold on a line.
+    /// - If unfolding: loads children via JSON if needed, renders them, returns display lines
+    /// - If folding: cascades fold to descendants, returns empty (Model removes lines via MappingBuffer)
+    ///
+    /// Note: node.render() returns display lines for the node's children, not the node itself.
+    /// For example, commit.render() returns file diff lines via `jj diff --name-only`.
     pub fn toggle_fold(
         &mut self,
         global_args: &GlobalArgs,
         tree_pos: &TreePosition,
-    ) -> Result<usize> {
-        let mut tree_pos = tree_pos.clone();
-        tree_pos.truncate(DIFF_HUNK_IDX + 1);
-        let node = self.get_tree_node(&tree_pos)?;
+        mapping_buffer: &Arc<Mutex<MappingBuffer>>,
+    ) -> Result<(Vec<Text<'static>>, usize)> {
+        // Get insertion point and child range BEFORE toggle
+        let (insertion_point, child_range) = {
+            let buffer = mapping_buffer
+                .lock()
+                .map_err(|e| anyhow::anyhow!("Failed to lock mapping buffer: {}", e))?;
+            let insert = buffer.get_insertion_point(tree_pos);
+            let range = buffer.get_child_line_range(tree_pos);
+            (insert, range)
+        };
+
+        let node = self
+            .get_tree_node_mut(tree_pos)
+            .ok_or_else(|| anyhow::anyhow!("Node not found at tree position {:?}", tree_pos))?;
+
+        // Toggle the node's fold state (this loads children if unfolding)
         node.toggle_fold(global_args)?;
-        Ok(node.flat_log_idx())
+
+        // If now unfolded, render and notify MappingBuffer
+        if !node.is_folded() {
+            let new_lines = node.render(global_args)?;
+            let insert_idx = insertion_point.unwrap_or(0);
+            let count = new_lines.len();
+            let tree_index = tree_pos.first().copied().unwrap_or(0);
+
+            // Notify MappingBuffer of insertion
+            let mut buffer = mapping_buffer
+                .lock()
+                .map_err(|e| anyhow::anyhow!("Failed to lock mapping buffer: {}", e))?;
+            buffer.notify_inserted(insert_idx, count, tree_pos, tree_index)?;
+
+            return Ok((new_lines, insert_idx));
+        }
+
+        // If folded, notify MappingBuffer of removal and return empty
+        if let Some((start, end)) = child_range {
+            let tree_index = tree_pos.first().copied().unwrap_or(0);
+            let mut buffer = mapping_buffer
+                .lock()
+                .map_err(|e| anyhow::anyhow!("Failed to lock mapping buffer: {}", e))?;
+            buffer.notify_removed(start, end, tree_index)?;
+            return Ok((Vec::new(), start));
+        }
+
+        Ok((Vec::new(), 0))
     }
 }
 
+/// Trait for nodes in the display tree hierarchy (commit → file diff → diff hunk → diff line).
+///
+/// This represents the *visual* tree structure shown in the UI, NOT the commit
+/// parent/child DAG relationships. For DAG navigation (parent commits, siblings),
+/// use `CommitData.parent_change_ids` directly.
 pub trait LogTreeNode {
-    fn render(&self) -> Result<Text<'static>>;
-    fn flatten(
-        &mut self,
-        tree_pos: TreePosition,
-        log_list: &mut Vec<Text<'static>>,
-        log_list_tree_positions: &mut Vec<TreePosition>,
-    ) -> Result<()>;
-    fn flat_log_idx(&self) -> usize;
-    fn children(&self) -> Vec<&dyn LogTreeNode>;
+    /// Render this node's children to displayable Text lines using ANSI templates.
+    ///
+    /// For example:
+    /// - CommitData.render() calls `jj diff --name-only` and returns file list lines
+    /// - FileDiff.render() calls `jj diff <file>` and returns diff content lines
+    /// - DiffHunk.render() returns the diff lines for that hunk
+    ///
+    /// Returns empty Vec if folded or no children loaded.
+    fn render(&self, global_args: &GlobalArgs) -> Result<Vec<Text<'static>>>;
+
+    /// Toggle the folded state of this node.
+    /// - If folding: cascades fold to all descendants
+    /// - If unfolding: populates children via JSON templates
+    /// Returns unit - no display work. JjLog orchestrates rendering.
     fn toggle_fold(&mut self, global_args: &GlobalArgs) -> Result<()>;
-    /// Get the line number for this node (only implemented for DiffHunkLine)
-    fn line_number(&self) -> Option<u32> {
-        None
-    }
+
+    /// Check if this node is currently folded.
+    fn is_folded(&self) -> bool;
+
+    /// Get child nodes that are currently loaded.
+    /// Returns empty vec if children not loaded or if leaf node.
+    fn children(&self) -> Vec<&dyn LogTreeNode>;
+
+    /// Load children from jj using JSON templates.
+    /// Called by toggle_fold when unfolding and children not loaded.
+    fn load_children(&mut self, global_args: &GlobalArgs) -> Result<()>;
 }
 
 pub type TreePosition = Vec<usize>;
@@ -214,807 +268,142 @@ pub fn get_parent_tree_position(tree_pos: &TreePosition) -> Option<TreePosition>
     }
 }
 
-#[allow(clippy::large_enum_variant)]
-#[derive(Debug)]
-pub enum CommitOrText {
-    Commit(Commit),
-    InfoText(InfoText),
-}
+// ============================================================================
+// LogTreeNode implementations for the display hierarchy
+// ============================================================================
 
-impl CommitOrText {
-    fn load_all(global_args: &GlobalArgs, revset: &str, limit: usize) -> Result<Vec<Self>> {
-        let output = JjCommand::log(revset, limit, global_args.clone()).run()?;
-        let mut lines = output.trim().lines();
-        let re = Regex::new(r"^.+([k-z]{8}(?:/\d+)?)\s+.*\s+([a-f0-9]{8}).*$")?;
-
-        let mut commits_or_texts = Vec::new();
-        loop {
-            let line1 = match lines.next() {
-                None => break,
-                Some(line) => line,
-            };
-
-            if re.captures(&strip_ansi(line1)).is_none() {
-                commits_or_texts.push(Self::InfoText(InfoText::new(line1.to_string())));
-                continue;
-            };
-
-            let line2 = lines.next().unwrap_or_default();
-            commits_or_texts.push(Self::Commit(Commit::new(format!("{line1}\n{line2}"))?));
+impl LogTreeNode for CommitData {
+    fn render(&self, global_args: &GlobalArgs) -> Result<Vec<Text<'static>>> {
+        // If folded or no file diffs loaded, return empty
+        if self.folded || self.file_diffs.is_none() {
+            return Ok(Vec::new());
         }
 
-        Ok(commits_or_texts)
-    }
+        // Render file diffs by calling jj diff --name-only
+        // This returns the list of changed files as display lines
+        let output = JjCommand::diff_summary(&self.change_id, global_args.clone())
+            .run()
+            .map_err(|e| anyhow::anyhow!("Failed to get diff summary: {}", e))?;
 
-    fn flatten(
-        &mut self,
-        tree_pos: TreePosition,
-        log_list: &mut Vec<Text<'static>>,
-        log_list_tree_positions: &mut Vec<TreePosition>,
-    ) -> Result<()> {
-        match self {
-            CommitOrText::Commit(commit) => {
-                commit.flatten(tree_pos, log_list, log_list_tree_positions)
-            }
-            CommitOrText::InfoText(info_text) => {
-                info_text.flatten(tree_pos, log_list, log_list_tree_positions)
-            }
-        }
-    }
-
-    pub fn flat_log_idx(&self) -> usize {
-        match self {
-            CommitOrText::Commit(commit) => commit.flat_log_idx(),
-            CommitOrText::InfoText(info_text) => info_text.flat_log_idx,
-        }
-    }
-}
-
-#[derive(Debug)]
-pub struct Commit {
-    pub change_id: String,
-    _commit_id: String,
-    pub current_working_copy: bool,
-    has_conflict: bool,
-    _empty: bool,
-    pub description_first_line: Option<String>,
-    symbol: String,
-    line1_graph_chars: String,
-    line1_graph_chars_part2: String,
-    line2_graph_chars: String,
-    pretty_line1: String,
-    pretty_line2: String,
-    graph_indent: String,
-    unfolded: bool,
-    loaded: bool,
-    file_diffs: Vec<FileDiff>,
-    pub flat_log_idx: usize,
-}
-
-impl Commit {
-    fn new(pretty_string: String) -> Result<Self> {
-        let clean_string = strip_ansi(&pretty_string);
-
-        let captures = get_re_fields()
-            .captures(&clean_string)
-            .ok_or_else(|| anyhow!("Cannot parse commit fields: {:?}", clean_string))?;
-        let line1_graph_chars: String = captures
-            .get(1)
-            .ok_or_else(|| anyhow!("Cannot parse line 1 graph chars"))?
-            .as_str()
-            .into();
-        let symbol = captures
-            .get(2)
-            .ok_or_else(|| anyhow!("Cannot parse commit symbol"))?
-            .as_str()
-            .into();
-        let line1_graph_chars_part2 = captures
-            .get(3)
-            .ok_or_else(|| anyhow!("Cannot parse line 1 graph chars part 2"))?
-            .as_str()
-            .into();
-        let change_id = captures
-            .get(4)
-            .ok_or_else(|| anyhow!("Cannot parse commit change id"))?
-            .as_str()
-            .into();
-        let commit_id = captures
-            .get(5)
-            .ok_or_else(|| anyhow!("Cannot parse commit id"))?
-            .as_str()
-            .into();
-        let conflict_status: String = captures
-            .get(6)
-            .ok_or_else(|| anyhow!("Cannot parse conflict status"))?
-            .as_str()
-            .into();
-        let line2_graph_chars: String = captures
-            .get(7)
-            .ok_or_else(|| anyhow!("Cannot parse line 2 graph chars"))?
-            .as_str()
-            .into();
-        let mut graph_indent: String = line2_graph_chars
-            .chars()
-            .map(|c| match c {
-                '│' | '├' | '┤' | '┬' | '╭' | '╮' | '┼' => '│',
-                _ => ' ',
-            })
+        let lines: Vec<Text<'static>> = output
+            .lines()
+            .filter(|line| !line.is_empty())
+            .map(|line| Text::from(format!("    {}", line)))
             .collect();
-        graph_indent.pop(); // Even out with our spacing
-        let empty_capture = captures.get(8);
-        let description_string: String = captures
-            .get(9)
-            .ok_or_else(|| anyhow!("Cannot parse description string"))?
-            .as_str()
-            .into();
 
-        let current_working_copy = symbol == "@";
-        let has_conflict = conflict_status == "(conflict)";
-        let empty = empty_capture.is_some();
-        let description_first_line = if description_string == "(no description set)" {
-            None
-        } else {
-            Some(description_string)
-        };
-
-        let captures = get_re_lines()
-            .captures(&pretty_string)
-            .ok_or_else(|| anyhow!("Cannot parse commit lines: {:?}", pretty_string))?;
-        let pretty_line1 = captures
-            .get(1)
-            .ok_or_else(|| anyhow!("Cannot parse commit line1"))?
-            .as_str()
-            .into();
-        let pretty_line2 = captures
-            .get(2)
-            .ok_or_else(|| anyhow!("Cannot parse commit line2"))?
-            .as_str()
-            .into();
-
-        Ok(Commit {
-            change_id,
-            _commit_id: commit_id,
-            current_working_copy,
-            has_conflict,
-            _empty: empty,
-            description_first_line,
-            symbol,
-            line1_graph_chars,
-            line1_graph_chars_part2,
-            line2_graph_chars,
-            pretty_line1,
-            pretty_line2,
-            graph_indent,
-            unfolded: false,
-            loaded: false,
-            file_diffs: Vec::new(),
-            flat_log_idx: 0,
-        })
-    }
-}
-
-impl LogTreeNode for Commit {
-    fn render(&self) -> Result<Text<'static>> {
-        let mut line1 = Line::from(vec![
-            Span::raw(self.line1_graph_chars.clone()),
-            Span::styled(
-                self.symbol.clone(),
-                if self.has_conflict {
-                    Style::default().fg(Color::Red)
-                } else if self.current_working_copy {
-                    Style::default()
-                        .fg(Color::Green)
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(Color::LightCyan)
-                },
-            ),
-            Span::raw(self.line1_graph_chars_part2.clone()),
-            Span::raw(" "),
-            fold_symbol(self.unfolded),
-            Span::raw(" "),
-        ]);
-        line1.extend(self.pretty_line1.into_text()?.lines[0].spans.clone());
-        let mut lines = vec![line1];
-        if !self.pretty_line2.is_empty() {
-            let mut line2 = Line::from(vec![
-                Span::raw(self.line2_graph_chars.clone()),
-                Span::raw(" "),
-            ]);
-            line2.extend(self.pretty_line2.into_text()?.lines[0].spans.clone());
-            lines.push(line2);
-        };
-        Ok(Text::from(lines))
-    }
-
-    fn flatten(
-        &mut self,
-        tree_pos: TreePosition,
-        log_list: &mut Vec<Text<'static>>,
-        log_list_tree_positions: &mut Vec<TreePosition>,
-    ) -> Result<()> {
-        self.flat_log_idx = log_list.len();
-        log_list.push(self.render()?);
-        log_list_tree_positions.push(tree_pos.clone());
-
-        if !self.unfolded {
-            return Ok(());
-        }
-
-        for (file_diff_idx, file_diff) in self.file_diffs.iter_mut().enumerate() {
-            let mut new_pos = tree_pos.clone();
-            new_pos.push(file_diff_idx);
-            file_diff.flatten(new_pos, log_list, log_list_tree_positions)?;
-        }
-
-        Ok(())
-    }
-
-    fn flat_log_idx(&self) -> usize {
-        self.flat_log_idx
-    }
-
-    fn children(&self) -> Vec<&dyn LogTreeNode> {
-        self.file_diffs
-            .iter()
-            .map(|fd| fd as &dyn LogTreeNode)
-            .collect()
+        Ok(lines)
     }
 
     fn toggle_fold(&mut self, global_args: &GlobalArgs) -> Result<()> {
-        self.unfolded = !self.unfolded;
-        if !self.unfolded {
-            return Ok(());
-        }
+        self.folded = !self.folded;
 
-        if !self.loaded {
-            let file_diffs = FileDiff::load_all(global_args, &self.change_id, &self.graph_indent)?;
-            self.file_diffs = file_diffs;
-            self.loaded = true;
+        if self.folded {
+            // Cascading fold: fold all descendants
+            if let Some(ref mut file_diffs) = self.file_diffs {
+                for file_diff in file_diffs {
+                    file_diff.folded = true;
+                }
+            }
+        } else {
+            // Unfolding: load file diffs if not already loaded
+            self.load_children(global_args)?;
         }
 
         Ok(())
     }
-}
 
-#[derive(Debug)]
-pub struct InfoText {
-    pretty_string: String,
-    flat_log_idx: usize,
-}
-
-impl InfoText {
-    fn new(pretty_string: String) -> Self {
-        Self {
-            pretty_string,
-            flat_log_idx: 0,
-        }
-    }
-}
-
-impl LogTreeNode for InfoText {
-    fn render(&self) -> Result<Text<'static>> {
-        Ok(self.pretty_string.into_text()?)
-    }
-
-    fn flatten(
-        &mut self,
-        tree_pos: TreePosition,
-        log_list: &mut Vec<Text<'static>>,
-        log_list_tree_positions: &mut Vec<TreePosition>,
-    ) -> Result<()> {
-        self.flat_log_idx = log_list.len();
-        log_list.push(self.render()?);
-        log_list_tree_positions.push(tree_pos.clone());
-        Ok(())
-    }
-
-    fn flat_log_idx(&self) -> usize {
-        self.flat_log_idx
+    fn is_folded(&self) -> bool {
+        self.folded
     }
 
     fn children(&self) -> Vec<&dyn LogTreeNode> {
-        Vec::new()
+        if self.folded {
+            return Vec::new();
+        }
+        if let Some(ref file_diffs) = self.file_diffs {
+            file_diffs.iter().map(|fd| fd as &dyn LogTreeNode).collect()
+        } else {
+            Vec::new()
+        }
     }
 
-    fn toggle_fold(&mut self, _global_args: &GlobalArgs) -> Result<()> {
-        Ok(())
-    }
-}
-
-#[derive(Debug)]
-pub struct FileDiff {
-    change_id: String,
-    pub path: String,
-    description: String,
-    status: FileDiffStatus,
-    graph_indent: String,
-    unfolded: bool,
-    loaded: bool,
-    diff_hunks: Vec<DiffHunk>,
-    flat_log_idx: usize,
-}
-
-impl FileDiff {
-    fn new(change_id: String, pretty_string: String, graph_indent: String) -> Result<Self> {
-        let clean_string = strip_ansi(&pretty_string);
-        let re = Regex::new(r"^([MADRC])\s+(.+)$").unwrap();
-
-        let captures = re
-            .captures(&clean_string)
-            .ok_or_else(|| anyhow!("Cannot parse file diff string: {clean_string}"))?;
-        let status = captures
-            .get(1)
-            .ok_or_else(|| anyhow!("Cannot parse file diff status"))?
-            .as_str()
-            .parse::<FileDiffStatus>()?;
-        let description: String = captures
-            .get(2)
-            .ok_or_else(|| anyhow!("Cannot parse file diff path"))?
-            .as_str()
-            .into();
-
-        let path = match status {
-            FileDiffStatus::Renamed | FileDiffStatus::Copied => {
-                let rename_regex = Regex::new(r"^(.*)\{(.+?)\s*=>\s*(.+?)\}(.*)$").unwrap();
-                let captures = rename_regex.captures(&description).ok_or_else(|| {
-                    anyhow!("Cannot parse file diff rename/copied paths: {description}")
-                })?;
-                let path_prefix = captures
-                    .get(1)
-                    .ok_or_else(|| anyhow!("Cannot parse file diff rename/copied path prefix"))?
-                    .as_str();
-                let path_new_end = captures
-                    .get(3)
-                    .ok_or_else(|| anyhow!("Cannot parse file diff rename/copied path new end"))?
-                    .as_str();
-                let path_suffix = captures
-                    .get(4)
-                    .ok_or_else(|| anyhow!("Cannot parse file diff rename/copied path suffix"))?
-                    .as_str();
-
-                format!("{path_prefix}{path_new_end}{path_suffix}")
-            }
-            _ => description.clone(),
-        };
-
-        Ok(Self {
-            change_id,
-            path,
-            description,
-            status,
-            graph_indent,
-            unfolded: false,
-            loaded: false,
-            diff_hunks: Vec::new(),
-            flat_log_idx: 0,
-        })
-    }
-
-    fn load_all(
-        global_args: &GlobalArgs,
-        change_id: &str,
-        graph_indent: &str,
-    ) -> Result<Vec<Self>> {
-        let output = JjCommand::diff_summary(change_id, global_args.clone()).run()?;
-        let lines: Vec<&str> = output.trim().lines().collect();
-
-        let mut file_diffs = Vec::new();
-        for line in lines {
-            file_diffs.push(Self::new(
-                change_id.to_string(),
-                line.to_string(),
-                graph_indent.to_string(),
-            )?);
+    fn load_children(&mut self, global_args: &GlobalArgs) -> Result<()> {
+        if self.file_diffs.is_some() {
+            // Already loaded
+            return Ok(());
         }
 
-        Ok(file_diffs)
+        // Load file diffs via jj diff --summary with JSON template
+        let output = JjCommand::diff_summary_json(&self.change_id, global_args.clone())
+            .run()
+            .map_err(|e| anyhow::anyhow!("Failed to load diff summary: {}", e))?;
+
+        // Parse JSON lines into DiffSummaryEntry structs
+        let mut loaded_diffs = Vec::new();
+        for line in output.lines().filter(|l| !l.is_empty()) {
+            let entry: crate::commit_data::DiffSummaryEntry = serde_json::from_str(line)
+                .map_err(|e| anyhow::anyhow!("Failed to parse diff summary JSON: {}", e))?;
+
+            // Map status string to FileDiffStatus
+            let status = match entry.status.as_str() {
+                "added" => FileDiffStatus::Added,
+                "deleted" => FileDiffStatus::Deleted,
+                "modified" => FileDiffStatus::Modified,
+                "renamed" => FileDiffStatus::Renamed,
+                "copied" => FileDiffStatus::Copied,
+                _ => FileDiffStatus::Modified, // Default for unknown statuses
+            };
+
+            loaded_diffs.push(FileDiff {
+                change_id: self.change_id.clone(),
+                path: entry.path,
+                status,
+                source_path: entry.source_path,
+                folded: true, // Children start folded
+            });
+        }
+
+        self.file_diffs = Some(loaded_diffs);
+        Ok(())
     }
 }
 
 impl LogTreeNode for FileDiff {
-    fn render(&self) -> Result<Text<'static>> {
-        let line = Line::from(vec![
-            Span::raw(self.graph_indent.clone()),
-            fold_symbol(self.unfolded),
-            Span::raw(" "),
-            Span::styled(
-                format!("{}  {}", self.status, self.description),
-                Style::default().fg(Color::LightBlue),
-            ),
-        ]);
-        Ok(Text::from(line))
-    }
-
-    fn flatten(
-        &mut self,
-        tree_pos: TreePosition,
-        log_list: &mut Vec<Text<'static>>,
-        log_list_tree_positions: &mut Vec<TreePosition>,
-    ) -> Result<()> {
-        self.flat_log_idx = log_list.len();
-        log_list.push(self.render()?);
-        log_list_tree_positions.push(tree_pos.clone());
-
-        if !self.unfolded {
-            return Ok(());
+    fn render(&self, global_args: &GlobalArgs) -> Result<Vec<Text<'static>>> {
+        // If folded, return empty
+        if self.folded {
+            return Ok(Vec::new());
         }
 
-        for (diff_hunk_idx, diff_hunk) in self.diff_hunks.iter_mut().enumerate() {
-            let mut new_pos = tree_pos.clone();
-            new_pos.push(diff_hunk_idx);
-            diff_hunk.flatten(new_pos, log_list, log_list_tree_positions)?;
-        }
+        // Render diff for this file by calling jj diff
+        let output = JjCommand::diff_file(&self.change_id, &self.path, global_args.clone())
+            .run()
+            .map_err(|e| anyhow::anyhow!("Failed to get diff for {}: {}", self.path, e))?;
 
-        Ok(())
-    }
+        let lines: Vec<Text<'static>> = output
+            .lines()
+            .map(|line| Text::from(format!("      {}", line)))
+            .collect();
 
-    fn flat_log_idx(&self) -> usize {
-        self.flat_log_idx
-    }
-
-    fn children(&self) -> Vec<&dyn LogTreeNode> {
-        self.diff_hunks
-            .iter()
-            .map(|dh| dh as &dyn LogTreeNode)
-            .collect()
-    }
-
-    fn toggle_fold(&mut self, global_args: &GlobalArgs) -> Result<()> {
-        self.unfolded = !self.unfolded;
-
-        if !self.loaded {
-            let diff_hunks =
-                DiffHunk::load_all(global_args, &self.change_id, &self.path, &self.graph_indent)?;
-            self.diff_hunks = diff_hunks;
-            self.loaded = true;
-        }
-
-        Ok(())
-    }
-}
-
-#[derive(Debug)]
-enum FileDiffStatus {
-    Modified,
-    Added,
-    Deleted,
-    Renamed,
-    Copied,
-}
-
-impl std::str::FromStr for FileDiffStatus {
-    type Err = Error;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "M" => Ok(FileDiffStatus::Modified),
-            "A" => Ok(FileDiffStatus::Added),
-            "D" => Ok(FileDiffStatus::Deleted),
-            "R" => Ok(FileDiffStatus::Renamed),
-            "C" => Ok(FileDiffStatus::Copied),
-            _ => Err(anyhow!("Unknown file diff status: {}", s)),
-        }
-    }
-}
-
-impl fmt::Display for FileDiffStatus {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let word = match self {
-            FileDiffStatus::Modified => "modified",
-            FileDiffStatus::Added => "new file",
-            FileDiffStatus::Deleted => "deleted ",
-            FileDiffStatus::Renamed => "renamed ",
-            FileDiffStatus::Copied => "copied  ",
-        };
-        write!(f, "{word}")
-    }
-}
-
-#[derive(Debug)]
-struct DiffHunk {
-    graph_indent: String,
-    unfolded: bool,
-    diff_hunk_lines: Vec<DiffHunkLine>,
-    red_start: u32,
-    red_end: u32,
-    green_start: u32,
-    green_end: u32,
-    flat_log_idx: usize,
-}
-
-enum SearchDirection {
-    Down,
-    Up,
-}
-
-impl DiffHunk {
-    fn new(graph_indent: String, diff_hunk_lines: Vec<DiffHunkLine>) -> Result<Self> {
-        let (red_start, green_start) =
-            Self::find_line_nums(&diff_hunk_lines, SearchDirection::Down)?;
-        let (red_end, green_end) = Self::find_line_nums(&diff_hunk_lines, SearchDirection::Up)?;
-
-        // Align line nums
-        let max_line_num = red_end.max(green_end);
-        let line_num_chars_len = max_line_num.checked_ilog10().unwrap_or(0) as usize;
-        let mut diff_hunk_lines = diff_hunk_lines;
-        for line in diff_hunk_lines.iter_mut() {
-            line.pretty_string = line.pretty_string.replacen(
-                &" ".repeat(3_usize.saturating_sub(line_num_chars_len)),
-                "",
-                1,
-            );
-        }
-
-        Ok(Self {
-            graph_indent,
-            unfolded: true,
-            diff_hunk_lines,
-            red_start,
-            red_end,
-            green_start,
-            green_end,
-            flat_log_idx: 0,
-        })
-    }
-
-    fn find_line_nums(
-        diff_hunk_lines: &[DiffHunkLine],
-        direction: SearchDirection,
-    ) -> Result<(u32, u32)> {
-        let line_nums_regex = Regex::new(r"^\s*(\d+)?\s+(\d+)?:").unwrap();
-        let mut red: Option<String> = None;
-        let mut green: Option<String> = None;
-
-        let hunk_lines: Vec<&DiffHunkLine> = match direction {
-            SearchDirection::Down => diff_hunk_lines.iter().collect(),
-            SearchDirection::Up => diff_hunk_lines.iter().rev().collect(),
-        };
-        for line in hunk_lines.iter().map(|l| strip_ansi(&l.pretty_string)) {
-            if matches!(line.trim(), "~" | "(binary)" | "(empty)") {
-                continue;
-            }
-            let captures = line_nums_regex
-                .captures(&line)
-                .ok_or_else(|| anyhow!("Cannot parse diff hunk line: {line:?}"))?;
-            if red.is_none()
-                && let Some(num_match) = captures.get(1)
-                && !num_match.is_empty()
-            {
-                red = Some(num_match.as_str().to_string())
-            }
-            if green.is_none()
-                && let Some(num_match) = captures.get(2)
-                && !num_match.is_empty()
-            {
-                green = Some(num_match.as_str().to_string())
-            }
-
-            if red.is_some() && green.is_some() {
-                break;
-            }
-        }
-
-        if red.is_none() {
-            red = Some("0".to_string());
-        }
-        if green.is_none() {
-            green = Some("0".to_string());
-        }
-
-        Ok((red.unwrap().parse()?, green.unwrap().parse()?))
-    }
-
-    fn load_all(
-        global_args: &GlobalArgs,
-        change_id: &str,
-        file: &str,
-        graph_indent: &str,
-    ) -> Result<Vec<Self>> {
-        let output = JjCommand::diff_file(change_id, file, global_args.clone()).run()?;
-        let output_lines: Vec<&str> = output.trim().lines().skip(1).collect();
-
-        let separator_regex = Regex::new(r"^\s*\.\.\.\s*$")?;
-        let mut diff_hunks: Vec<DiffHunk> = Vec::new();
-        let mut diff_hunk_lines = Vec::new();
-
-        let mut push_diff_hunk = |diff_hunk_lines: Vec<DiffHunkLine>| -> Result<()> {
-            if !diff_hunk_lines.is_empty() {
-                diff_hunks.push(Self::new(graph_indent.to_string(), diff_hunk_lines)?);
-            }
-            Ok(())
-        };
-
-        // Helper function to parse line number from diff output
-        fn parse_line_number(line: &str) -> Option<u32> {
-            // Parse line number from format like "  OLD  NEW: content" or "    NEW: content" or "  OLD   :"
-            // We want the NEW (green) line number
-            let regex = regex::Regex::new(r"^\s*(\d+)?\s+(\d+)?:").ok()?;
-            let captures = regex.captures(line)?;
-
-            // Try green line number first (group 2), fall back to red (group 1)
-            captures
-                .get(2)
-                .or_else(|| captures.get(1))
-                .and_then(|m| m.as_str().parse().ok())
-        }
-
-        for line in output_lines {
-            let clean_line = strip_ansi(line);
-
-            if separator_regex.is_match(&clean_line) {
-                push_diff_hunk(diff_hunk_lines)?;
-                diff_hunk_lines = Vec::new();
-            } else {
-                // Parse line number from the diff line format (use clean_line without ANSI)
-                let line_num = parse_line_number(&clean_line);
-                diff_hunk_lines.push(DiffHunkLine::new(
-                    line.to_string(),
-                    graph_indent.to_string(),
-                    line_num,
-                ));
-            }
-        }
-
-        push_diff_hunk(diff_hunk_lines)?;
-
-        // Visual divider between hunk diff and next item in log list
-        if !diff_hunks.is_empty() {
-            diff_hunks
-                .last_mut()
-                .unwrap()
-                .diff_hunk_lines
-                .push(DiffHunkLine::new(
-                    "\x1b[35m~\x1b[0m".to_string(),
-                    graph_indent.to_string(),
-                    None,
-                ));
-        }
-
-        Ok(diff_hunks)
-    }
-}
-
-impl LogTreeNode for DiffHunk {
-    fn render(&self) -> Result<Text<'static>> {
-        let red_num_lines = if self.red_end == 0 {
-            0
-        } else {
-            self.red_end - self.red_start + 1
-        };
-        let green_num_lines = if self.green_end == 0 {
-            0
-        } else {
-            self.green_end - self.green_start + 1
-        };
-
-        let line = Line::from(vec![
-            Span::raw(self.graph_indent.clone()),
-            fold_symbol(self.unfolded),
-            Span::raw(" "),
-            Span::styled(
-                format!(
-                    "@@ -{},{} +{},{} @@",
-                    self.red_start, red_num_lines, self.green_start, green_num_lines,
-                ),
-                Style::default().fg(Color::Magenta),
-            ),
-        ]);
-        Ok(Text::from(line))
-    }
-
-    fn flatten(
-        &mut self,
-        tree_pos: TreePosition,
-        log_list: &mut Vec<Text<'static>>,
-        log_list_tree_positions: &mut Vec<TreePosition>,
-    ) -> Result<()> {
-        self.flat_log_idx = log_list.len();
-        log_list.push(self.render()?);
-        log_list_tree_positions.push(tree_pos.clone());
-
-        if !self.unfolded {
-            return Ok(());
-        }
-
-        for (diff_hunk_line_idx, diff_hunk_line) in self.diff_hunk_lines.iter_mut().enumerate() {
-            let mut new_pos = tree_pos.clone();
-            new_pos.push(diff_hunk_line_idx);
-            diff_hunk_line.flatten(new_pos, log_list, log_list_tree_positions)?;
-        }
-
-        Ok(())
-    }
-
-    fn flat_log_idx(&self) -> usize {
-        self.flat_log_idx
-    }
-
-    fn children(&self) -> Vec<&dyn LogTreeNode> {
-        self.diff_hunk_lines
-            .iter()
-            .map(|hl| hl as &dyn LogTreeNode)
-            .collect()
+        Ok(lines)
     }
 
     fn toggle_fold(&mut self, _global_args: &GlobalArgs) -> Result<()> {
-        self.unfolded = !self.unfolded;
-        Ok(())
-    }
-}
-
-#[derive(Debug)]
-pub struct DiffHunkLine {
-    pretty_string: String,
-    graph_indent: String,
-    flat_log_idx: usize,
-    line_number: Option<u32>,
-}
-
-impl DiffHunkLine {
-    fn new(pretty_string: String, graph_indent: String, line_number: Option<u32>) -> Self {
-        Self {
-            pretty_string,
-            graph_indent,
-            flat_log_idx: 0,
-            line_number,
-        }
-    }
-}
-
-impl LogTreeNode for DiffHunkLine {
-    fn render(&self) -> Result<Text<'static>> {
-        let clean_string = strip_ansi(&self.pretty_string);
-        let mut line = Line::from(vec![Span::raw(self.graph_indent.clone()), Span::raw("  ")]);
-
-        for span in self.pretty_string.into_text()?.lines[0].spans.clone() {
-            let span = if clean_string.starts_with("+") || clean_string.starts_with("-") {
-                let style = span.style.bold();
-                span.style(style)
-            } else {
-                span
-            };
-            line.spans.push(span);
-        }
-
-        Ok(Text::from(line))
-    }
-
-    fn flatten(
-        &mut self,
-        tree_pos: TreePosition,
-        log_list: &mut Vec<Text<'static>>,
-        log_list_tree_positions: &mut Vec<TreePosition>,
-    ) -> Result<()> {
-        self.flat_log_idx = log_list.len();
-        log_list.push(self.render()?);
-        log_list_tree_positions.push(tree_pos);
+        self.folded = !self.folded;
         Ok(())
     }
 
-    fn flat_log_idx(&self) -> usize {
-        self.flat_log_idx
+    fn is_folded(&self) -> bool {
+        self.folded
     }
 
     fn children(&self) -> Vec<&dyn LogTreeNode> {
+        // Files are leaf nodes now - no hunks
         Vec::new()
     }
 
-    fn toggle_fold(&mut self, _global_args: &GlobalArgs) -> Result<()> {
+    fn load_children(&mut self, _global_args: &GlobalArgs) -> Result<()> {
+        // Files are leaf nodes - no children to load
         Ok(())
     }
-
-    fn line_number(&self) -> Option<u32> {
-        self.line_number
-    }
-}
-
-fn fold_symbol(unfolded: bool) -> Span<'static> {
-    let symbol = if unfolded { "▾" } else { "▸" };
-    Span::styled(symbol, Style::default().fg(Color::DarkGray))
-}
-
-pub fn strip_ansi(pretty_str: &str) -> String {
-    let ansi_regex = Regex::new(r"\x1b\[[0-9;]*m").unwrap();
-    ansi_regex.replace_all(pretty_str, "").to_string()
 }

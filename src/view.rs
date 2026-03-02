@@ -21,7 +21,7 @@ pub fn view(model: &mut Model, frame: &mut Frame) {
     let log_list = render_log_list(model);
     let layout = render_layout(model, frame.area());
     frame.render_widget(header, layout[0]);
-    frame.render_stateful_widget(log_list, layout[1], &mut model.log_list_state);
+    frame.render_widget(log_list, layout[1]);
     model.log_list_layout = layout[1];
     if let Some(info_list) = render_info_list(model) {
         frame.render_widget(info_list, layout[2]);
@@ -86,26 +86,49 @@ fn render_header(model: &Model) -> Paragraph<'_> {
 }
 
 fn render_log_list(model: &Model) -> List<'static> {
-    let mut log_items = model.log_list.clone();
-    inject_virtual_bookmark(model, &mut log_items);
-    inject_virtual_description(model, &mut log_items);
-    apply_saved_selection_highlights(model, &mut log_items);
-    List::new(log_items)
-        .highlight_style(Style::new().bold().bg(SELECTION_COLOR))
-        .scroll_padding(model.log_list_scroll_padding)
+    // Slice display_lines using scroll offset
+    let start = model.scroll_offset;
+    let end = (start + model.log_list_layout.height as usize).min(model.display_lines.len());
+
+    let mut log_items: Vec<Text<'static>> = model.display_lines[start..end].to_vec();
+
+    // Adjust cursor for visible slice
+    let visible_cursor = model.cursor.saturating_sub(start);
+
+    inject_virtual_bookmark(model, &mut log_items, visible_cursor);
+    inject_virtual_description(model, &mut log_items, visible_cursor);
+    apply_saved_selection_highlights(model, &mut log_items, visible_cursor);
+
+    // Create list with highlighted selection
+    let items_with_selection: Vec<Text<'static>> = log_items
+        .into_iter()
+        .enumerate()
+        .map(|(idx, text)| {
+            if idx == visible_cursor {
+                // Apply selection highlight
+                let highlighted_line = text.lines.into_iter().next().unwrap_or_default();
+                let mut highlighted = highlighted_line;
+                highlighted
+                    .spans
+                    .insert(0, Span::styled("", Style::new().bold().bg(SELECTION_COLOR)));
+                Text::from(highlighted)
+            } else {
+                text
+            }
+        })
+        .collect();
+
+    List::new(items_with_selection)
 }
 
 /// When bookmark editing is active, inject the virtual bookmark into the selected commit's line.
 /// The real cursor is rendered via terminal ANSI codes, not as fake text.
-fn inject_virtual_bookmark(model: &Model, log_items: &mut [ratatui::text::Text<'static>]) {
+fn inject_virtual_bookmark(model: &Model, log_items: &mut [Text<'static>], visible_cursor: usize) {
     let editing_change_id = match &model.text_input_location {
         crate::update::TextInputLocation::Bookmark { change_id } => change_id,
         _ => return,
     };
-    let Some(selected_idx) = model.log_list_state.selected() else {
-        return;
-    };
-    let Some(text) = log_items.get_mut(selected_idx) else {
+    let Some(text) = log_items.get_mut(visible_cursor) else {
         return;
     };
 
@@ -165,12 +188,13 @@ fn render_description_line(line_text: &str, line_idx: usize) -> Vec<Span<'static
 
 /// When description editing is active, replace the description line with the user's input
 /// Displays actual multi-line descriptions with proper indentation
-fn inject_virtual_description(model: &Model, log_items: &mut [ratatui::text::Text<'static>]) {
+fn inject_virtual_description(
+    model: &Model,
+    log_items: &mut [Text<'static>],
+    visible_cursor: usize,
+) {
     if let crate::update::TextInputLocation::Description { .. } = &model.text_input_location {
-        let Some(selected_idx) = model.log_list_state.selected() else {
-            return;
-        };
-        let Some(text) = log_items.get_mut(selected_idx) else {
+        let Some(text) = log_items.get_mut(visible_cursor) else {
             return;
         };
 
@@ -216,7 +240,11 @@ fn inject_virtual_description(model: &Model, log_items: &mut [ratatui::text::Tex
     }
 }
 
-fn apply_saved_selection_highlights(model: &Model, log_items: &mut [ratatui::text::Text<'static>]) {
+fn apply_saved_selection_highlights(
+    model: &Model,
+    log_items: &mut [Text<'static>],
+    _visible_cursor: usize,
+) {
     let (saved_commit_idx, saved_file_diff_idx) = model.get_saved_selection_flat_log_idxs();
 
     if let Some(idx) = saved_commit_idx
@@ -232,7 +260,7 @@ fn apply_saved_selection_highlights(model: &Model, log_items: &mut [ratatui::tex
     }
 }
 
-fn apply_saved_selection_highlight(text: &mut ratatui::text::Text<'static>) {
+fn apply_saved_selection_highlight(text: &mut Text<'static>) {
     text.style = text.style.bg(SAVED_SELECTION_COLOR);
     for line in &mut text.lines {
         for span in &mut line.spans {
