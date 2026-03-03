@@ -2,6 +2,7 @@ use crate::commit_data::{CommitData, FileDiff, FileDiffStatus};
 use crate::mapping_buffer::MappingBuffer;
 use crate::model::GlobalArgs;
 use crate::shell_out::{JjCommand, build_display_mappings};
+use ansi_to_tui::IntoText;
 use anyhow::{Result, anyhow};
 use ratatui::text::Text;
 use regex::Regex;
@@ -16,6 +17,17 @@ pub fn strip_ansi(s: &str) -> String {
     static RE_ANSI: OnceLock<Regex> = OnceLock::new();
     let re = RE_ANSI.get_or_init(|| Regex::new(r"\x1b\[[0-9;]*m").unwrap());
     re.replace_all(s, "").to_string()
+}
+
+/// Result of toggling a node's fold state.
+pub enum ToggleFoldResult {
+    /// The node was folded. Contains the line range (start, end) that should be removed from display.
+    Folded((usize, usize)),
+    /// The node was unfolded. Contains the lines to insert and the insertion point.
+    Unfolded {
+        lines: Vec<Text<'static>>,
+        insertion_point: usize,
+    },
 }
 
 const INITIAL_LOAD_COUNT: usize = 200;
@@ -57,8 +69,7 @@ impl JjLog {
             JjCommand::log_dual(revset, INITIAL_LOAD_COUNT, global_args.clone())?;
 
         // Build display mappings from display_lines and commits
-        let (line_to_tree_pos, tree_index_to_line_range) =
-            build_display_mappings(&display_lines, &commits, 0);
+        let (line_to_tree_pos, _) = build_display_mappings(&display_lines, &commits, 0);
 
         // Populate the shared MappingBuffer
         {
@@ -66,7 +77,7 @@ impl JjLog {
                 .mapping_buffer
                 .lock()
                 .map_err(|e| anyhow!("Failed to lock mapping buffer: {}", e))?;
-            buffer.rebuild(line_to_tree_pos, tree_index_to_line_range)?;
+            buffer.rebuild(line_to_tree_pos);
         }
 
         // Store the structured commits
@@ -92,14 +103,14 @@ impl JjLog {
         if new_count > 0 {
             self.commits.extend(commits);
 
-            let (line_to_tree_pos, tree_index_to_line_range) =
+            let (line_to_tree_pos, _) =
                 build_display_mappings(&display_lines, &self.commits, line_offset);
 
             let mut buffer = self
                 .mapping_buffer
                 .lock()
                 .map_err(|e| anyhow!("Failed to lock mapping buffer: {}", e))?;
-            let _ = buffer.notify_appended(line_to_tree_pos, tree_index_to_line_range);
+            buffer.notify_appended(line_to_tree_pos);
         }
 
         Ok((display_lines, new_count > 0))
@@ -170,7 +181,7 @@ impl JjLog {
         global_args: &GlobalArgs,
         tree_pos: &TreePosition,
         mapping_buffer: &Arc<Mutex<MappingBuffer>>,
-    ) -> Result<(Vec<Text<'static>>, usize)> {
+    ) -> Result<ToggleFoldResult> {
         // Get insertion point and child range BEFORE toggle
         let (insertion_point, child_range) = {
             let buffer = mapping_buffer
@@ -193,15 +204,17 @@ impl JjLog {
             let new_lines = node.render(global_args)?;
             let insert_idx = insertion_point.unwrap_or(0);
             let count = new_lines.len();
-            let tree_index = tree_pos.first().copied().unwrap_or(0);
 
             // Notify MappingBuffer of insertion
             let mut buffer = mapping_buffer
                 .lock()
                 .map_err(|e| anyhow::anyhow!("Failed to lock mapping buffer: {}", e))?;
-            buffer.notify_inserted(insert_idx, count, tree_pos, tree_index)?;
+            buffer.notify_inserted(insert_idx, count, tree_pos)?;
 
-            return Ok((new_lines, insert_idx));
+            return Ok(ToggleFoldResult::Unfolded {
+                lines: new_lines,
+                insertion_point: insert_idx,
+            });
         }
 
         // If folded, notify MappingBuffer of removal and return empty
@@ -211,10 +224,10 @@ impl JjLog {
                 .lock()
                 .map_err(|e| anyhow::anyhow!("Failed to lock mapping buffer: {}", e))?;
             buffer.notify_removed(start, end, tree_index)?;
-            return Ok((Vec::new(), start));
+            return Ok(ToggleFoldResult::Folded((start, end)));
         }
 
-        Ok((Vec::new(), 0))
+        Ok(ToggleFoldResult::Folded((0, 0)))
     }
 }
 
@@ -288,8 +301,8 @@ impl LogTreeNode for CommitData {
         let lines: Vec<Text<'static>> = output
             .lines()
             .filter(|line| !line.is_empty())
-            .map(|line| Text::from(format!("    {}", line)))
-            .collect();
+            .map(|line| format!("    {}", line).into_text())
+            .collect::<Result<Vec<_>, _>>()?;
 
         Ok(lines)
     }
@@ -382,8 +395,8 @@ impl LogTreeNode for FileDiff {
 
         let lines: Vec<Text<'static>> = output
             .lines()
-            .map(|line| Text::from(format!("      {}", line)))
-            .collect();
+            .map(|line| format!("      {}", line).into_text())
+            .collect::<Result<Vec<_>, _>>()?;
 
         Ok(lines)
     }

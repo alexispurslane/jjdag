@@ -194,10 +194,9 @@ impl JjCommand {
     /// Get diff summary as JSON for structured parsing.
     /// Returns JSON lines with path, status, and source_path.
     pub fn diff_summary_json(change_id: &str, global_args: GlobalArgs) -> Self {
-        let template = r#"{"path": path, "status": status, "source_path": source_path}"#;
+        let template = r###" "{ \"path\": \"" ++ path ++ "\", \"status\": \"" ++ status ++ "\", \"source_path\": \"" ++ source.path() ++ "\" }\n" "###;
         let args = [
             "diff",
-            "--summary",
             "--revisions",
             change_id,
             "--template",

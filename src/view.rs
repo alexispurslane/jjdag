@@ -23,6 +23,12 @@ pub fn view(model: &mut Model, frame: &mut Frame) {
     frame.render_widget(header, layout[0]);
     frame.render_widget(log_list, layout[1]);
     model.log_list_layout = layout[1];
+
+    // Render debug overlay if RUST_LOG=debug is set
+    if log::log_enabled!(log::Level::Debug) {
+        render_debug_overlay(model, frame, layout[1]);
+    }
+
     if let Some(info_list) = render_info_list(model) {
         frame.render_widget(info_list, layout[2]);
     }
@@ -103,15 +109,16 @@ fn render_log_list(model: &Model) -> List<'static> {
     let items_with_selection: Vec<Text<'static>> = log_items
         .into_iter()
         .enumerate()
-        .map(|(idx, text)| {
+        .map(|(idx, mut text)| {
             if idx == visible_cursor {
-                // Apply selection highlight
-                let highlighted_line = text.lines.into_iter().next().unwrap_or_default();
-                let mut highlighted = highlighted_line;
-                highlighted
-                    .spans
-                    .insert(0, Span::styled("", Style::new().bold().bg(SELECTION_COLOR)));
-                Text::from(highlighted)
+                // Apply selection highlight to ALL spans in the line
+                if let Some(line) = text.lines.first_mut() {
+                    for span in &mut line.spans {
+                        // Preserve original style but add selection background
+                        span.style = span.style.patch(Style::new().bg(SELECTION_COLOR));
+                    }
+                }
+                text
             } else {
                 text
             }
@@ -451,6 +458,46 @@ fn render_text_prompt_popup(
     );
 
     frame.render_widget(paragraph, popup_area);
+}
+
+/// Render a debug overlay showing tree positions for each visible line.
+/// Only renders when RUST_LOG=debug is set.
+fn render_debug_overlay(model: &Model, frame: &mut Frame, area: Rect) {
+    let start = model.scroll_offset;
+    let visible_height = area.height as usize;
+    let end = (start + visible_height).min(model.display_lines.len());
+    let visible_count = end.saturating_sub(start);
+
+    // Get mapping buffer
+    let buffer = match model.mapping_buffer.lock() {
+        Ok(b) => b,
+        Err(_) => return,
+    };
+
+    // Build lines with tree positions right-aligned
+    let mut lines: Vec<Line<'static>> = Vec::with_capacity(visible_count);
+
+    for i in 0..visible_count {
+        let line_idx = start + i;
+        let tree_pos_str = match buffer.get_tree_position(line_idx) {
+            Some(pos) if !pos.is_empty() => {
+                let parts: Vec<String> = pos.iter().map(|p| p.to_string()).collect();
+                format!("[{}]", parts.join(","))
+            }
+            _ => "[]".to_string(),
+        };
+
+        // Right-align the tree position text
+        let style = Style::default().fg(Color::DarkGray);
+        let span = Span::styled(tree_pos_str, style);
+        lines.push(Line::from(vec![span]));
+    }
+
+    // Create overlay paragraph with transparent background
+    let overlay = Paragraph::new(Text::from(lines)).alignment(ratatui::layout::Alignment::Right);
+
+    // Render in the same area as the log list (overlay on top)
+    frame.render_widget(overlay, area);
 }
 
 fn render_info_list(model: &Model) -> Option<List<'static>> {

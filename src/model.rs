@@ -227,7 +227,8 @@ impl Model {
                 while !current_pos.is_empty() {
                     if let Some(line_idx) = buffer.get_line_for_tree_position(&current_pos) {
                         self.cursor = line_idx;
-                        self.scroll_offset = line_idx; // Keep cursor visible
+                        // Don't jump scroll_offset - let the view stay where it is
+                        // The cursor will be visible on next render
                         break;
                     }
                     // Try parent position
@@ -346,6 +347,7 @@ impl Model {
             // At bottom of loaded list, try to load more
             self.maybe_load_more()?;
         }
+        self.ensure_cursor_visible();
         Ok(())
     }
 
@@ -353,6 +355,7 @@ impl Model {
         if self.cursor > 0 {
             self.cursor -= 1;
         }
+        self.ensure_cursor_visible();
     }
 
     fn maybe_load_more(&mut self) -> Result<()> {
@@ -380,6 +383,7 @@ impl Model {
                 {
                     self.cursor = line_idx;
                 }
+                self.ensure_cursor_visible();
                 return;
             }
         }
@@ -414,6 +418,7 @@ impl Model {
                 {
                     self.cursor = line_idx;
                 }
+                self.ensure_cursor_visible();
                 return Ok(());
             }
         }
@@ -467,6 +472,7 @@ impl Model {
             }
         }
 
+        self.ensure_cursor_visible();
         Ok(())
     }
 
@@ -518,6 +524,7 @@ impl Model {
             }
         }
 
+        self.ensure_cursor_visible();
         Ok(())
     }
 
@@ -555,6 +562,8 @@ impl Model {
     }
 
     pub fn toggle_current_fold(&mut self) -> Result<()> {
+        use crate::log_tree::ToggleFoldResult;
+
         // Get tree position for current cursor line
         let tree_pos = {
             let buffer = self
@@ -567,28 +576,21 @@ impl Model {
                 .unwrap_or_default()
         };
 
-        // Get child line range BEFORE toggle (for folding)
-        let child_range = {
-            let buffer = self
-                .mapping_buffer
-                .lock()
-                .map_err(|e| anyhow::anyhow!("Failed to lock mapping buffer: {}", e))?;
-            buffer.get_child_line_range(&tree_pos)
-        };
-
         // Toggle fold via JjLog (handles MappingBuffer updates internally)
-        let (new_lines, insert_idx) =
-            self.jj_log
-                .toggle_fold(&self.global_args, &tree_pos, &self.mapping_buffer)?;
+        let result = self
+            .jj_log
+            .toggle_fold(&self.global_args, &tree_pos, &self.mapping_buffer)?;
 
-        if !new_lines.is_empty() {
-            // UNFOLDING: Insert new display lines at insertion point
-            for (i, line) in new_lines.into_iter().enumerate() {
-                self.display_lines.insert(insert_idx + i, line);
+        match result {
+            ToggleFoldResult::Unfolded {
+                lines,
+                insertion_point,
+            } => {
+                for (i, line) in lines.into_iter().enumerate() {
+                    self.display_lines.insert(insertion_point + i, line);
+                }
             }
-        } else {
-            // FOLDING: Remove child lines from display_lines
-            if let Some((start, end)) = child_range {
+            ToggleFoldResult::Folded((start, end)) => {
                 // Remove lines from display_lines (in reverse to maintain indices)
                 for i in (start..end).rev() {
                     self.display_lines.remove(i);

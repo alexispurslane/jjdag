@@ -22,7 +22,18 @@ use shell_out::JjCommand;
 use terminal::Term;
 
 fn main() {
-    let _ = logger::FileLogger::init(Level::Debug);
+    // Initialize logger based on RUST_LOG environment variable
+    let log_level = match std::env::var("RUST_LOG") {
+        Ok(v) => match v.to_lowercase().as_str() {
+            "debug" => Level::Debug,
+            "info" => Level::Info,
+            "warn" => Level::Warn,
+            "error" => Level::Error,
+            _ => Level::Info,
+        },
+        Err(_) => Level::Info,
+    };
+    let _ = logger::FileLogger::init(log_level);
     log::info!("jjdag starting up");
 
     let result = run();
