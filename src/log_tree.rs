@@ -28,6 +28,7 @@ pub enum ToggleFoldResult {
         lines: Vec<Text<'static>>,
         insertion_point: usize,
     },
+    NoChange,
 }
 
 const INITIAL_LOAD_COUNT: usize = 200;
@@ -204,6 +205,10 @@ impl JjLog {
             let new_lines = node.render(global_args)?;
             let insert_idx = insertion_point.unwrap_or(0);
             let count = new_lines.len();
+
+            if count == 0 {
+                return Ok(ToggleFoldResult::NoChange);
+            }
 
             // Notify MappingBuffer of insertion
             let mut buffer = mapping_buffer

@@ -101,8 +101,8 @@ fn render_log_list(model: &Model) -> List<'static> {
     // Adjust cursor for visible slice
     let visible_cursor = model.cursor.saturating_sub(start);
 
-    inject_virtual_bookmark(model, &mut log_items, visible_cursor);
-    inject_virtual_description(model, &mut log_items, visible_cursor);
+    inject_virtual_bookmark(model, &mut log_items);
+    inject_virtual_description(model, &mut log_items);
     apply_saved_selection_highlights(model, &mut log_items, visible_cursor);
 
     // Create list with highlighted selection
@@ -129,13 +129,36 @@ fn render_log_list(model: &Model) -> List<'static> {
 }
 
 /// When bookmark editing is active, inject the virtual bookmark into the selected commit's line.
+/// Uses the mapping buffer to find the exact line where the commit starts (same logic as
+/// calculate_bookmark_cursor_position), accounting for scroll offset internally.
 /// The real cursor is rendered via terminal ANSI codes, not as fake text.
-fn inject_virtual_bookmark(model: &Model, log_items: &mut [Text<'static>], visible_cursor: usize) {
+fn inject_virtual_bookmark(model: &Model, log_items: &mut [Text<'static>]) {
     let editing_change_id = match &model.text_input_location {
         crate::update::TextInputLocation::Bookmark { change_id } => change_id,
         _ => return,
     };
-    let Some(text) = log_items.get_mut(visible_cursor) else {
+
+    // Use mapping buffer to find the exact line where the commit starts (same as cursor calculation)
+    let buffer = match model.mapping_buffer.lock() {
+        Ok(b) => b,
+        _ => return,
+    };
+
+    // Get the tree position for the current cursor
+    let Some(tree_pos) = buffer.get_tree_position(model.cursor).cloned() else {
+        return;
+    };
+
+    // Get the display line where that commit starts
+    let Some(containing_start_line) = buffer.get_exact_line_for_tree_position(&tree_pos) else {
+        return;
+    };
+
+    // Calculate visible index (same logic as cursor calculation)
+    let visible_idx = containing_start_line.saturating_sub(model.scroll_offset);
+
+    // Check if this line is in the visible range
+    let Some(text) = log_items.get_mut(visible_idx) else {
         return;
     };
 
@@ -193,58 +216,105 @@ fn render_description_line(line_text: &str, line_idx: usize) -> Vec<Span<'static
     }
 }
 
-/// When description editing is active, replace the description line with the user's input
-/// Displays actual multi-line descriptions with proper indentation
-fn inject_virtual_description(
-    model: &Model,
-    log_items: &mut [Text<'static>],
-    visible_cursor: usize,
-) {
-    if let crate::update::TextInputLocation::Description { .. } = &model.text_input_location {
-        let Some(text) = log_items.get_mut(visible_cursor) else {
-            return;
-        };
+/// When description editing is active, replace the description line with the user's input.
+/// The description is on the line AFTER the commit line (visible_idx + 1).
+/// Multi-line descriptions are rendered as multiple Lines within one Text element.
+fn inject_virtual_description(model: &Model, log_items: &mut [Text<'static>]) {
+    let change_id = match &model.text_input_location {
+        crate::update::TextInputLocation::Description { change_id, .. } => change_id,
+        _ => return,
+    };
 
-        // Get the input text (show placeholder if empty)
-        // Strip any ANSI codes that might have been included
-        let input_text = if model.text_input.is_empty() {
-            "(no description set)".to_string()
-        } else {
-            strip_ansi(&model.text_input)
-        };
+    // Use mapping buffer to find the exact line where the commit starts
+    let Ok(buffer) = model.mapping_buffer.lock() else {
+        return;
+    };
+    let Some(tree_pos) = buffer.get_tree_position(model.cursor) else {
+        return;
+    };
+    let Some(containing_start_line) = buffer.get_exact_line_for_tree_position(&tree_pos) else {
+        return;
+    };
 
-        // Split input into lines
-        let desc_lines: Vec<&str> = input_text.split('\n').collect();
+    // Description line is one line after the commit line
+    let commit_line_idx = containing_start_line.saturating_sub(model.scroll_offset);
+    let desc_line_idx = (containing_start_line + 1).saturating_sub(model.scroll_offset);
 
-        // Get the prefix from the existing description line (for graph indentation)
-        // Strip ANSI codes to avoid rendering them as text
-        let prefix_content = if text.lines.len() >= 2 && !text.lines[1].spans.is_empty() {
-            strip_ansi(&text.lines[1].spans[0].content)
-        } else {
-            "  ".to_string()
-        };
-        let prefix_span = Span::raw(prefix_content);
-
-        // Build new lines: keep line 0 (graph + change_id), then add description lines
-        let mut new_lines: Vec<Line<'static>> = Vec::new();
-
-        // Keep the first line (graph + change_id) but strip ANSI codes
-        if !text.lines.is_empty() {
-            let clean_line = strip_ansi_from_line(&text.lines[0]);
-            new_lines.push(clean_line);
-        }
-
-        // Add description lines (real cursor is rendered via ANSI codes)
-        for (line_idx, line_text) in desc_lines.iter().enumerate() {
-            let desc_spans = render_description_line(line_text, line_idx);
-            let mut all_spans = vec![prefix_span.clone(), Span::raw(" ")];
-            all_spans.extend(desc_spans);
-            new_lines.push(Line::from(all_spans));
-        }
-
-        // Replace the text lines
-        text.lines = new_lines;
+    // Verify this is the right commit by checking change_id on the commit line first
+    let Some(commit_text) = log_items.get(commit_line_idx) else {
+        return;
+    };
+    let commit_str = commit_text.to_string();
+    if !commit_str.contains(&change_id[..8]) {
+        return;
     }
+
+    // Now get mutable reference to the description line
+    let Some(text) = log_items.get_mut(desc_line_idx) else {
+        return;
+    };
+
+    // Get the input text (show placeholder if empty)
+    let input_text = if model.text_input.is_empty() {
+        "(no description set)".to_string()
+    } else {
+        strip_ansi(&model.text_input)
+    };
+
+    // Get the prefix from the existing description line (for graph indentation like "│  ")
+    let prefix_content = if !text.lines.is_empty() && !text.lines[0].spans.is_empty() {
+        let first_span = &text.lines[0].spans[0].content;
+        // Extract just the graph characters (everything before the actual description)
+        let prefix_end = first_span
+            .char_indices()
+            .find(|(_, c)| !c.is_whitespace() && *c != '│' && *c != '|')
+            .map(|(i, _)| i)
+            .unwrap_or(first_span.len());
+        first_span[..prefix_end].to_string()
+    } else {
+        "  ".to_string()
+    };
+
+    // Split input into lines for multi-line rendering
+    let input_lines: Vec<&str> = input_text.split('\n').collect();
+
+    // Build multiple Lines for multi-line description
+    // All lines get the prefix (graph indentation) except we use spaces for continuation
+    let mut new_lines: Vec<Line<'static>> = Vec::new();
+    let base_style = if model.text_input.is_empty() {
+        Style::default().fg(Color::DarkGray)
+    } else {
+        INPUT_STYLE
+    };
+
+    for (idx, line_content) in input_lines.iter().enumerate() {
+        // First line gets the full prefix with graph char, subsequent lines get spaces
+        let prefix = if idx == 0 {
+            prefix_content.clone()
+        } else {
+            // Replace graph chars with spaces for indentation alignment
+            prefix_content
+                .chars()
+                .map(|c| {
+                    if c.is_whitespace() || c == '│' || c == '|' {
+                        ' '
+                    } else {
+                        c
+                    }
+                })
+                .collect()
+        };
+
+        let spans = vec![
+            Span::raw(prefix),
+            Span::raw(" "),
+            Span::styled(line_content.to_string(), base_style),
+        ];
+        new_lines.push(Line::from(spans));
+    }
+
+    // Replace the Text with a new one containing all the lines
+    *text = Text::from(new_lines);
 }
 
 fn apply_saved_selection_highlights(

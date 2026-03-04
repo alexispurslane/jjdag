@@ -98,7 +98,10 @@ impl MappingBuffer {
     ///
     /// Returns: Some((start_line, end_line)) if children found, None otherwise
     pub fn get_child_line_range(&self, tree_pos: &TreePosition) -> Option<(usize, usize)> {
-        let start_line = self.get_exact_line_for_tree_position(tree_pos)?;
+        let start_line = self
+            .line_to_tree_pos
+            .iter()
+            .rposition(|pos| pos == tree_pos)?;
 
         let end_line: usize = start_line
             + 1

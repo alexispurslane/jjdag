@@ -19,6 +19,7 @@ use arboard::Clipboard;
 use crossterm::event::KeyCode;
 use std::fmt;
 use std::sync::{Arc, Mutex};
+use unicode_width::UnicodeWidthStr;
 
 /// Wrapper for Clipboard that implements Debug
 pub struct ClipboardWrapper(Option<Clipboard>);
@@ -210,8 +211,11 @@ impl Model {
 
         // Save current tree position for restoration
         let saved_tree_pos = {
-            let buffer = self.mapping_buffer.lock().ok();
-            buffer.and_then(|b| b.get_tree_position(self.cursor).cloned())
+            if let Some(b) = self.mapping_buffer.lock().ok() {
+                b.get_tree_position(self.cursor).cloned()
+            } else {
+                None
+            }
         };
 
         self.clear();
@@ -596,6 +600,7 @@ impl Model {
                     self.display_lines.remove(i);
                 }
             }
+            ToggleFoldResult::NoChange => {}
         }
 
         Ok(())
@@ -972,7 +977,7 @@ impl Model {
             .split('\n')
             .next()
             .unwrap_or(&self.text_input);
-        let first_line_len = first_line.chars().count();
+        let first_line_len = first_line.width();
 
         if first_line_len > 50 && !self.description_warning_shown {
             // First line exceeds 50 chars and warning not shown yet
@@ -1276,7 +1281,7 @@ impl Model {
 
             if !is_first_line || line_has_newline_before {
                 // We're on a subsequent line, check 72-column limit
-                let line_len = current_line.chars().count();
+                let line_len = current_line.width();
                 if line_len >= 72 {
                     // Replace space with newline for auto-wrap
                     self.text_input.insert(self.text_cursor, '\n');
@@ -1595,60 +1600,45 @@ impl Model {
     /// Calculate cursor position for revset editing in the header.
     /// Header format: "repository: {repo}  revset: {input}"
     fn calculate_revset_cursor_position(&self) -> Option<(u16, u16)> {
-        // Prefix: "repository: " (12) + repo + "  " (2) + "revset: " (8) = 22 + repo.len()
-        let prefix_len = 22 + self.display_repository.len();
-        let cursor_x = prefix_len + self.text_cursor;
+        // Prefix: "repository: " (12) + repo + "  " (2) + "revset: " (8) = 22 + repo display width
+        let prefix_len = 22 + self.display_repository.width();
+        // Calculate visual width of text up to cursor (handles multi-byte chars)
+        let text_before_cursor = &self.text_input[..self.text_cursor.min(self.text_input.len())];
+        let cursor_x = prefix_len + text_before_cursor.width();
         Some((cursor_x as u16, 0))
     }
 
     /// Calculate cursor position for bookmark creation in the log list.
     /// The bookmark is injected at the selected commit line with format: " [bookmark]"
     fn calculate_bookmark_cursor_position(&self) -> Option<(u16, u16)> {
-        let selected_idx = self.cursor;
-        let offset = self.scroll_offset;
+        if let Some(b) = self.mapping_buffer.lock().ok() {
+            // get the commit we're in
+            let containing_tree_pos = b.get_tree_position(self.cursor).cloned()?;
+            // get the display line where that commit starts
+            let containing_start_line = b.get_exact_line_for_tree_position(&containing_tree_pos)?;
 
-        // Calculate Y position within the list
-        // Each display line is 1 unit tall, so the math is simple
-        let visual_row = (selected_idx.saturating_sub(offset)) as u16;
-        let y = self.log_list_layout.y + visual_row;
-
-        // X position: need to account for the prefix before the bookmark text
-        // This is approximate - we need to know the line's content up to the bookmark
-        // The bookmark is appended after the commit line with " [" prefix
-        let line = self.display_lines.get(selected_idx)?;
-
-        // Find where change_id ends to calculate the prefix
-        // Format is typically: graph chars + symbol + " " + change_id + " " + ...
-        // We append " [" + input + "]" at the end
-        // IMPORTANT: Only measure the first line since bookmark is injected there,
-        // and strip ANSI codes since they don't occupy screen space
-        let first_line = line.lines.first()?;
-        let first_line_text = first_line.to_string();
-        let first_line_visible = strip_ansi(&first_line_text);
-
-        // @ (head) is narrow, needs +2 to align with wide ●/○
-        let tree_pos = self.get_selected_tree_position();
-        let head_offset = self
-            .jj_log
-            .get_tree_commit(&tree_pos)
-            .map(|c| if c.is_working_copy { 2 } else { 0 })
-            .unwrap_or(0);
-
-        let x = (self.log_list_layout.x
-            + first_line_visible.len() as u16
-            + head_offset
-            + self.text_cursor as u16)
-            .saturating_sub(2);
-
-        Some((x, y))
+            // return the location to draw the cursor at
+            Some((
+                (strip_ansi(&self.display_lines[containing_start_line].to_string()).width()
+                + 2 /* for " [" */ + self.text_cursor) as u16,
+                (containing_start_line + 2 /* for the revset */ - self.log_offset()) as u16,
+            ))
+        } else {
+            None
+        }
     }
 
     /// Calculate cursor position for description editing in the log list.
     /// The description is rendered across multiple lines below the selected commit.
+    /// Uses the mapping buffer to find the exact commit line (same pattern as bookmark).
     fn calculate_description_cursor_position(&self) -> Option<(u16, u16)> {
-        let selected_idx = self.cursor;
+        // Use mapping buffer to find the exact line where the commit starts
+        let b = self.mapping_buffer.lock().ok()?;
+        let tree_pos = b.get_tree_position(self.cursor).cloned()?;
+        let containing_start_line = b.get_exact_line_for_tree_position(&tree_pos)?;
+
         let offset = self.scroll_offset;
-        let relative_row = selected_idx.saturating_sub(offset);
+        let relative_row = containing_start_line.saturating_sub(offset);
 
         // Find which line contains the cursor
         let mut current_pos = 0;
@@ -1657,43 +1647,17 @@ impl Model {
 
         // Log the input state
         let lines_vec: Vec<&str> = self.text_input.split('\n').collect();
-        log::debug!(
-            "CURSOR_DEBUG: text_input={:?}, text_cursor={}, lines_count={}",
-            self.text_input,
-            self.text_cursor,
-            lines_vec.len()
-        );
-        for (i, line) in lines_vec.iter().enumerate() {
-            log::debug!("CURSOR_DEBUG: line[{}]={:?}, len={}", i, line, line.len());
-        }
 
         for (idx, line) in lines_vec.iter().enumerate() {
             let line_end = current_pos + line.len();
-            log::debug!(
-                "CURSOR_DEBUG: loop idx={}, line={:?}, current_pos={}, line_end={}, text_cursor={}, condition={}",
-                idx,
-                line,
-                current_pos,
-                line_end,
-                self.text_cursor,
-                if self.text_cursor <= line_end {
-                    "HIT"
-                } else {
-                    "miss"
-                }
-            );
 
             let mut cursor_found = false;
             if self.text_cursor <= line_end {
                 cursor_line_idx = idx;
                 cursor_offset_in_line = self.text_cursor - current_pos;
-                log::debug!(
-                    "CURSOR_DEBUG: FOUND on line {}, offset_in_line={}",
-                    cursor_line_idx,
-                    cursor_offset_in_line
-                );
                 cursor_found = true;
             }
+
             current_pos = line_end + 1; // +1 for newline
             if cursor_found {
                 break;
@@ -1708,29 +1672,18 @@ impl Model {
             // Cursor is at/past the end of the last line, put it on a new empty line
             cursor_line_idx = lines_vec.len().saturating_sub(1);
             cursor_offset_in_line = 0;
-            log::debug!(
-                "CURSOR_DEBUG: applied fix, cursor >= current_pos ({} >= {}), new_line_idx={}, offset=0",
-                self.text_cursor,
-                current_pos,
-                cursor_line_idx
-            );
         }
 
         // Y position: selected row + 1 (for prefix line) + cursor line index
         let y = self.log_list_layout.y + relative_row as u16 + 1 + cursor_line_idx as u16;
 
-        // X position: prefix + cursor offset in line
-        // Prefix: "  → " = 4 characters
+        // X position: prefix + visual width of text up to cursor
+        // Prefix: "  → " = 4 display columns
         let prefix_len = 4;
-        let x = self.log_list_layout.x + prefix_len + cursor_offset_in_line as u16;
-
-        log::debug!(
-            "CURSOR_DEBUG: FINAL cursor_line_idx={}, cursor_offset_in_line={}, x={}, y={}",
-            cursor_line_idx,
-            cursor_offset_in_line,
-            x,
-            y
-        );
+        let current_line = lines_vec.get(cursor_line_idx).unwrap_or(&"");
+        let text_before_cursor = &current_line[..cursor_offset_in_line.min(current_line.len())];
+        let visual_offset = text_before_cursor.width();
+        let x = self.log_list_layout.x + prefix_len + visual_offset as u16;
 
         Some((x, y))
     }
@@ -1748,10 +1701,11 @@ impl Model {
         // Input line is at row 2 within popup (0: title, 1: spacer, 2: input)
         let input_y = popup_y + 2;
 
-        // X position: popup x + "> " prefix + cursor position
+        // X position: popup x + "> " prefix + visual width of text up to cursor
         let input_x = popup_x + 2; // border + padding
         let prefix_len = 2; // "> "
-        let x = input_x + prefix_len + self.text_cursor as u16;
+        let text_before_cursor = &self.text_input[..self.text_cursor.min(self.text_input.len())];
+        let x = input_x + prefix_len + text_before_cursor.width() as u16;
 
         Some((x, input_y))
     }

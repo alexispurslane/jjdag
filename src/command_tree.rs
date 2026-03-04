@@ -12,6 +12,7 @@ use ratatui::{
     text::{Line, Span, Text},
 };
 use std::collections::HashMap;
+use unicode_width::UnicodeWidthStr;
 
 type HelpEntries = IndexMap<String, Vec<(String, String)>>;
 
@@ -1879,10 +1880,7 @@ fn render_help_text(entries: HelpEntries) -> Text<'static> {
                     Style::default().fg(Color::Blue),
                 )]));
                 col_lines.extend(chunk.into_iter().map(|(key, help)| {
-                    let mut num_cols = key.len() + 1 + help.len();
-                    if !key.is_ascii() {
-                        num_cols -= 2;
-                    }
+                    let num_cols = key.width() + 1 + help.width();
                     let padding = " ".repeat(COL_WIDTH.saturating_sub(num_cols));
                     Line::from(vec![
                         Span::styled(key, Style::default().fg(Color::Green)),
