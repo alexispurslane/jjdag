@@ -841,7 +841,7 @@ impl JjCommand {
 /// then reads exactly 8 alphabetical characters.
 ///
 /// - `line`: The display line from jj log output
-fn extract_change_id(line: &str) -> Option<String> {
+pub fn extract_change_id(line: &str) -> Option<String> {
     // Step 1: Strip ANSI codes
     let stripped = strip_ansi(line);
 

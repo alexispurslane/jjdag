@@ -49,6 +49,12 @@ pub struct FileDiff {
     /// Whether this file diff is folded (collapsed).
     #[serde(default = "default_folded")]
     pub folded: bool,
+    /// Graph prefix for rendering unfolded content.
+    ///
+    /// Inherited from the parent commit's graph_prefix with additional
+    /// indentation. Not serialized — set at runtime.
+    #[serde(skip)]
+    pub graph_prefix: String,
 }
 
 /// Complete data for a single commit.
@@ -80,4 +86,13 @@ pub struct CommitData {
     /// Extra headers from jj log output (e.g., "git_refs", "branches").
     #[serde(flatten)]
     pub extra_headers: HashMap<String, String>,
+    /// Graph prefix for rendering unfolded content.
+    ///
+    /// Extracted from the jj log display line's description line and
+    /// transformed into a continuation prefix. For example, if the
+    /// description line is `"├─╯  fixing some bugs"`, the graph_prefix
+    /// would be `"│    "` (the continuation of the main line).
+    /// Not serialized — set at runtime after parsing display lines.
+    #[serde(skip)]
+    pub graph_prefix: String,
 }

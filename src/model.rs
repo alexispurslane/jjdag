@@ -189,6 +189,66 @@ impl Model {
             .into_iter()
             .map(|line| line.into_text())
             .collect::<Result<Vec<_>, _>>()?;
+
+        // Auto-unfold the working copy commit
+        self.unfold_working_commit()?;
+        Ok(())
+    }
+
+    /// Unfold the working copy commit if it is currently folded.
+    ///
+    /// This ensures the working copy is always expanded after loading or refreshing
+    /// the log tree, so the user can immediately see its file diffs.
+    fn unfold_working_commit(&mut self) -> Result<()> {
+        use crate::log_tree::ToggleFoldResult;
+
+        // Find the working copy commit index
+        let tree_pos = self
+            .jj_log
+            .commits
+            .iter()
+            .position(|c| c.is_working_copy)
+            .map(|idx| vec![idx]);
+
+        let Some(tree_pos) = tree_pos else {
+            // No working copy commit found (e.g., detached HEAD)
+            return Ok(());
+        };
+
+        // Check if already unfolded
+        let is_folded = self
+            .jj_log
+            .commits
+            .get(tree_pos[0])
+            .map(|c| c.folded)
+            .unwrap_or(false);
+
+        if !is_folded {
+            return Ok(());
+        }
+
+        // Unfold via toggle_fold
+        let result = self
+            .jj_log
+            .toggle_fold(&self.global_args, &tree_pos, &self.mapping_buffer)?;
+
+        match result {
+            ToggleFoldResult::Unfolded {
+                lines,
+                insertion_point,
+            } => {
+                for (i, line) in lines.into_iter().enumerate() {
+                    self.display_lines.insert(insertion_point + i, line);
+                }
+            }
+            ToggleFoldResult::Folded((start, end)) => {
+                for i in (start..end).rev() {
+                    self.display_lines.remove(i);
+                }
+            }
+            ToggleFoldResult::NoChange => {}
+        }
+
         Ok(())
     }
 
@@ -568,16 +628,23 @@ impl Model {
     pub fn toggle_current_fold(&mut self) -> Result<()> {
         use crate::log_tree::ToggleFoldResult;
 
-        // Get tree position for current cursor line
+        // Get tree position for current cursor line, then walk up to the
+        // nearest toggleable node. Leaf lines (e.g., diff content at depth 3+)
+        // are not toggleable — instead we toggle their parent FileDiff.
         let tree_pos = {
             let buffer = self
                 .mapping_buffer
                 .lock()
                 .map_err(|e| anyhow::anyhow!("Failed to lock mapping buffer: {}", e))?;
-            buffer
+            let mut pos = buffer
                 .get_tree_position(self.cursor)
                 .cloned()
-                .unwrap_or_default()
+                .unwrap_or_default();
+            // Only CommitData (depth 1) and FileDiff (depth 2) are toggleable.
+            // Truncate deeper positions to their nearest toggleable ancestor.
+            const MAX_TOGGLE_DEPTH: usize = 2;
+            pos.truncate(MAX_TOGGLE_DEPTH);
+            pos
         };
 
         // Toggle fold via JjLog (handles MappingBuffer updates internally)

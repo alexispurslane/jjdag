@@ -1,11 +1,12 @@
 use crate::commit_data::{CommitData, FileDiff, FileDiffStatus};
 use crate::mapping_buffer::MappingBuffer;
 use crate::model::GlobalArgs;
-use crate::shell_out::{JjCommand, build_display_mappings};
+use crate::shell_out::{JjCommand, build_display_mappings, extract_change_id};
 use ansi_to_tui::IntoText;
 use anyhow::{Result, anyhow};
 use ratatui::text::Text;
 use regex::Regex;
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
 /// Strip ANSI escape codes from a string.
@@ -19,7 +20,128 @@ pub fn strip_ansi(s: &str) -> String {
     re.replace_all(s, "").to_string()
 }
 
-/// Result of toggling a node's fold state.
+/// Extract the graph prefix from a jj log display line.
+///
+/// The graph prefix is the portion of the line before the commit content,
+/// consisting of Unicode box-drawing characters (│, ├, ╯, etc.) and spaces.
+/// For example, given `"│ ○  unqssrqr ..."`, returns `"│ "`.
+/// Given `"├─╯  fixing some bugs"`, returns `"├─╯  "`.
+///
+/// # Arguments
+/// - `line`: A raw display line from jj log output (may contain ANSI codes)
+///
+/// Returns: The graph prefix string, or empty string if no graph characters found
+pub fn extract_graph_prefix(line: &str) -> String {
+    let stripped = strip_ansi(line);
+    let prefix: String = stripped.chars().take_while(|c| is_graph_char(*c)).collect();
+    prefix
+}
+
+/// Check if a character is part of the jj log graph prefix.
+///
+/// Graph characters include Unicode box-drawing characters and the commit
+/// node symbols (○, ●, ◆, @, ⊗, ┴) that jj uses.
+fn is_graph_char(c: char) -> bool {
+    matches!(
+        c,
+        '│' | '├'
+            | '┤'
+            | '┬'
+            | '┴'
+            | '─'
+            | '╭'
+            | '╮'
+            | '╯'
+            | '╰'
+            | '○'
+            | '●'
+            | '◆'
+            | '@'
+            | '⊗'
+            | ' ' // spaces between graph columns
+    )
+}
+
+/// Transform a graph prefix into a continuation prefix for unfolded content.
+///
+/// When a commit is unfolded, its file diff lines should continue the graph
+/// structure. This function maps each graph character to its vertical
+/// continuation equivalent:
+///
+/// - Vertical/branch/merge characters (│, ├, ┤, ┬, ┴, ╭, ╮) → │ (continues down)
+/// - Horizontal/end characters (─, ╯, ╰) → space (branch has ended)
+/// - Commit node characters (○, ●, ◆, @, ⊗) → space (node is a point, not a line)
+/// - Spaces → spaces
+///
+/// # Arguments
+/// - `prefix`: A graph prefix string extracted from a jj log display line
+///
+/// Returns: The continuation prefix string for unfolded content lines
+pub fn graph_prefix_to_continuation(prefix: &str) -> String {
+    prefix
+        .chars()
+        .map(|c| match c {
+            // Vertical line continues
+            '│' => '│',
+            // Branch/merge points continue down as vertical lines
+            '├' | '┤' | '┬' | '┴' | '╭' | '╮' => '│',
+            // Horizontal connectors end (no continuation)
+            '─' => ' ',
+            // Curve ends: the branch that was merging in is now gone
+            '╯' | '╰' => ' ',
+            // Commit node characters: replace with space (node is a point)
+            '○' | '●' | '◆' | '@' | '⊗' => ' ',
+            // Spaces stay spaces
+            ' ' => ' ',
+            // Unknown characters: preserve as-is
+            _ => c,
+        })
+        .collect()
+}
+
+/// Set `graph_prefix` on each commit based on the display lines from jj log.
+///
+/// For each commit, finds its description line in the display output, extracts
+/// the graph prefix from that line, and transforms it into a continuation prefix.
+/// The continuation prefix is what should be used for unfolded content lines
+/// below that commit.
+///
+/// # Arguments
+/// - `commits`: Mutable slice of commits to set graph_prefix on
+/// - `display_lines`: Raw display lines from jj log output
+pub fn set_graph_prefixes(commits: &mut [CommitData], display_lines: &[String]) {
+    // Track which commit each display line belongs to
+    let mut current_commit_idx: Option<usize> = None;
+    // Track the last display line index for each commit (the description line)
+    let mut commit_last_line: HashMap<usize, usize> = HashMap::new();
+
+    for (line_idx, line) in display_lines.iter().enumerate() {
+        // Try to extract change_id from this line
+        if let Some(found_change_id) = extract_change_id(line) {
+            // Find which commit this change_id belongs to
+            if let Some(commit_idx) = commits.iter().position(|c| {
+                c.change_id.starts_with(&found_change_id) || c.change_id == found_change_id
+            }) {
+                current_commit_idx = Some(commit_idx);
+            }
+        }
+
+        // Record the last line for the current commit
+        if let Some(idx) = current_commit_idx {
+            commit_last_line.insert(idx, line_idx);
+        }
+    }
+
+    // Now set graph_prefix on each commit based on its last display line
+    for (commit_idx, commit) in commits.iter_mut().enumerate() {
+        if let Some(&last_line_idx) = commit_last_line.get(&commit_idx) {
+            let last_line = &display_lines[last_line_idx];
+            let prefix = extract_graph_prefix(last_line);
+            commit.graph_prefix = graph_prefix_to_continuation(&prefix);
+        }
+        // If no line found, graph_prefix stays as empty string (default)
+    }
+}
 pub enum ToggleFoldResult {
     /// The node was folded. Contains the line range (start, end) that should be removed from display.
     Folded((usize, usize)),
@@ -84,6 +206,9 @@ impl JjLog {
         // Store the structured commits
         self.commits = commits;
 
+        // Set graph_prefix on each commit based on display lines
+        set_graph_prefixes(&mut self.commits, &display_lines);
+
         Ok(display_lines)
     }
 
@@ -102,7 +227,11 @@ impl JjLog {
 
         let new_count = commits.len();
         if new_count > 0 {
-            self.commits.extend(commits);
+            // Set graph_prefix on new commits before extending
+            let mut new_commits = commits;
+            set_graph_prefixes(&mut new_commits, &display_lines);
+
+            self.commits.extend(new_commits);
 
             let (line_to_tree_pos, _) =
                 build_display_mappings(&display_lines, &self.commits, line_offset);
@@ -303,10 +432,11 @@ impl LogTreeNode for CommitData {
             .run()
             .map_err(|e| anyhow::anyhow!("Failed to get diff summary: {}", e))?;
 
+        let prefix = &self.graph_prefix;
         let lines: Vec<Text<'static>> = output
             .lines()
             .filter(|line| !line.is_empty())
-            .map(|line| format!("    {}", line).into_text())
+            .map(|line| format!("{}{}", prefix, line).into_text())
             .collect::<Result<Vec<_>, _>>()?;
 
         Ok(lines)
@@ -378,6 +508,7 @@ impl LogTreeNode for CommitData {
                 status,
                 source_path: entry.source_path,
                 folded: true, // Children start folded
+                graph_prefix: format!("{}  ", self.graph_prefix), // Indent from commit's prefix
             });
         }
 
@@ -398,9 +529,10 @@ impl LogTreeNode for FileDiff {
             .run()
             .map_err(|e| anyhow::anyhow!("Failed to get diff for {}: {}", self.path, e))?;
 
+        let prefix = &self.graph_prefix;
         let lines: Vec<Text<'static>> = output
             .lines()
-            .map(|line| format!("      {}", line).into_text())
+            .map(|line| format!("{}{}", prefix, line).into_text())
             .collect::<Result<Vec<_>, _>>()?;
 
         Ok(lines)

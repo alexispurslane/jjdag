@@ -125,9 +125,15 @@ impl MappingBuffer {
     pub fn get_insertion_point(&self, parent_tree_pos: &TreePosition) -> Option<usize> {
         self.get_child_line_range(parent_tree_pos)
             .map(|(_, end)| end)
-            .or(self
-                .get_line_for_tree_position(parent_tree_pos)
-                .map(|line| line + 1))
+            .or_else(|| {
+                // Find the LAST line belonging to the parent (not the first).
+                // A commit spans multiple display lines (change_id, description, etc.),
+                // and children should be inserted after the last one.
+                self.line_to_tree_pos
+                    .iter()
+                    .rposition(|pos| pos == parent_tree_pos)
+                    .map(|line| line + 1)
+            })
     }
 
     /// Notify that lines have been inserted (e.g., when unfolding a commit or file).
