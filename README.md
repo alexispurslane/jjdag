@@ -29,6 +29,12 @@ Since forking, we've made significant improvements across the entire application
 - **Fuzzy Popup System** — Added fuzzy searchable popups for 15+ command types including bookmark delete/rename/set/track/untrack, file track, git fetch remote/branch selection, and workspace forget/rename. No more typing bookmark names blindly into an external editor!
 - **Easy Splitting** — The double-editor-opening issue with `split` command has been abolished: now, you can split, and then edit the resulting revisiond descriptions inline, without ever leaving the TUI
 
+### Core Architecture Improvements
+
+The original version of `jjdag` used `jj log` to print out the relevant revset, then **used a regular expression** to parse the **raw unicode characters of the Jujutsu log graph.** This was slow, but it was also brittle: if the graph generating logic ever changed even for purely aesthetic, superficial reasons, the regular expression would break, and **the regular expression parsing already broke when encountering unexpected information** in the graph, which regularly rendered jjdag inoperable just when I needed it.
+
+The new architecture instead prints out the `jj log` graph purely for display, then prints out the repository log using a template with a constistent format that only lists out the expected and needed information that is turned into the internal graph representation, and maintaings a mapping between these two representations.
+
 ### Branch-Based Workflows (for GitHub and Git Users)
 
 jj's bookmark system is powerful but can feel awkward for GitHub-style branch workflows. We added support for the common bookmark "tug" alias to make things a little easier, but then we added three more features to make it sing:
